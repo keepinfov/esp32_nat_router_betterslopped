@@ -137,16 +137,24 @@ build_target() {
         build_args+=("-D" "SDKCONFIG_DEFAULTS=$sdkconfig")
     fi
 
-    # Set target using idf.py (use build dir args if custom)
-    idf.py "${build_args[@]}" set-target "$chip"
+    # set-target implies fullclean — it wipes the build directory before
+    # reconfiguring. Running it unconditionally, as this script used to, made
+    # every build a full rebuild no matter what. It is only needed when there
+    # is no configured build tree yet, or when the tree is configured for a
+    # different chip.
+    local configured=""
+    if [ -f "$sdkconfig_file" ]; then
+        configured=$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"$/\1/p' "$sdkconfig_file")
+    fi
 
-    # Incremental by default. Every target has its own build directory and its
-    # own sdkconfig, so nothing leaks between them and a rebuild after a
-    # one-line edit takes seconds instead of minutes. Use --clean when a full
-    # rebuild is actually wanted.
-    if [ "$DO_CLEAN" = true ]; then
-        print_status "Cleaning previous build artifacts..."
-        idf.py "${build_args[@]}" clean
+    if [ "$DO_CLEAN" = true ] || [ ! -d "$build_dir" ] || [ "$configured" != "$chip" ]; then
+        # Goes quiet for a while at "Building ESP-IDF components for target ..."
+        # while dependencies are resolved; say so rather than leaving a silent
+        # terminal that looks hung.
+        print_status "Configuring for $chip (resolving dependencies, may pause here)..."
+        idf.py "${build_args[@]}" set-target "$chip"
+    else
+        print_status "Reusing $build_dir (configured for $chip)"
     fi
 
     # Build project
@@ -321,6 +329,16 @@ main() {
     check_idf_env
 
     cd "$SCRIPT_DIR"
+
+    # ESP-IDF's component manager re-checks the manifest against Espressif's
+    # registry on every configure. Once dependencies.lock and
+    # managed_components/ exist there is nothing to fetch, but the check still
+    # runs — and on a blocked or slow network it sits on a TCP timeout with no
+    # output, which looks exactly like a hung build. Bounding the request makes
+    # it give up in seconds and carry on offline. An explicit setting wins.
+    if [ -f dependencies.lock ] && [ -d managed_components ]; then
+        export IDF_COMPONENT_API_TIMEOUT="${IDF_COMPONENT_API_TIMEOUT:-10}"
+    fi
 
     print_status "Working directory: $(pwd)"
     print_status "Targets: ${SELECTED_TARGETS[*]}"

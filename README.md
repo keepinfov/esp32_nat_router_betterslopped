@@ -175,6 +175,17 @@ esp32c3: 1490000 / 1572864 bytes in 'ota_0' (94.7%, 82864 free)
 The build fails past 95% of the slot. That guard exists because the C3 and C5
 images had reached 99.4% and 99.6% with nothing watching.
 
+The first build of a target configures it and takes minutes; later runs reuse
+the build tree and take seconds. `--clean` forces a reconfigure, which is also
+what happens automatically if the tree was configured for a different chip.
+
+Configuring pauses at `Building ESP-IDF components for target ...` while
+ESP-IDF's component manager checks the manifest against Espressif's registry.
+With no route to the registry that pause is a network timeout, not a hung
+build; once `dependencies.lock` exists the script bounds it with
+`IDF_COMPONENT_API_TIMEOUT` so it gives up quickly and builds offline. Set that
+variable yourself to override.
+
 Without the script:
 
 ```bash
