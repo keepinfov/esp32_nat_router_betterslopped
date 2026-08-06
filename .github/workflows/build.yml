@@ -10,6 +10,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Seven jobs per push saturates the runner allowance quickly, and a queue of
+# superseded runs delays the one that matters. Only the newest push on a branch
+# is worth building.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
