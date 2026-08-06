@@ -49,6 +49,10 @@ without one silently loses its overrides. Ethernet boards additionally take
 
 - One stylesheet, `components/http_server/www/app.css`, served gzipped at
   `/app.css`. Do not add `<style>` blocks to page templates.
+- Assets in `www/` are minified by `pack_asset.py` before they are gzipped and
+  embedded, so comments and indentation there cost nothing in flash — write
+  them freely. The C page fragments in `pages/` are a different matter: those
+  string literals go into the image verbatim.
 - Shared chrome comes from `send_page_head()` / `send_page_foot()`; a page
   emits only its own body.
 - Table classes: `.t` is any table, `.t.kv` a key/value readout, `.t.r` a
