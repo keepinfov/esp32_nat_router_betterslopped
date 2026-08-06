@@ -1,9 +1,23 @@
 #!/bin/bash
-
-# ESP32 NAT Router - Multi-Target Build Script
-# Compiles for all targets defined in BUILD_ORDER sequentially
+#
+# ESP32 NAT Router — build and size-check one target, several, or all of them.
+#
+#   ./build_all_targets.sh esp32c3          one target
+#   ./build_all_targets.sh esp32c3 wt32_eth01
+#   ./build_all_targets.sh                  everything in BUILD_ORDER
+#   ./build_all_targets.sh --clean esp32c3  full rebuild
+#   ./build_all_targets.sh --save           also refresh firmware_*/
+#
+# Builds are incremental and leave the repository untouched unless --save is
+# given: checking that something still compiles should not rewrite nine
+# megabytes of tracked binaries.
+#
+# Requires a sourced ESP-IDF environment: . $IDF_PATH/export.sh
 
 set -e  # Exit on any error
+
+DO_CLEAN=false
+DO_SAVE=false
 
 # Build targets in order
 BUILD_ORDER=("esp32" "wt32_eth01" "esp32_poe_iso" "esp32s3" "esp32c5" "esp32c6" "esp32c3")
@@ -126,9 +140,14 @@ build_target() {
     # Set target using idf.py (use build dir args if custom)
     idf.py "${build_args[@]}" set-target "$chip"
 
-    # Clean previous build artifacts
-    print_status "Cleaning previous build artifacts..."
-    idf.py "${build_args[@]}" clean
+    # Incremental by default. Every target has its own build directory and its
+    # own sdkconfig, so nothing leaks between them and a rebuild after a
+    # one-line edit takes seconds instead of minutes. Use --clean when a full
+    # rebuild is actually wanted.
+    if [ "$DO_CLEAN" = true ]; then
+        print_status "Cleaning previous build artifacts..."
+        idf.py "${build_args[@]}" clean
+    fi
 
     # Build project
     print_status "Starting compilation for $target..."
@@ -136,8 +155,11 @@ build_target() {
         if ! check_ota_headroom "$target"; then
             return 1
         fi
-        # Save binary artifacts to separate directory
-        save_binary_artifacts "$target" "$description"
+        # Only on request: this overwrites tracked binaries in firmware_*/,
+        # which a plain "does it still build" run has no business doing.
+        if [ "$DO_SAVE" = true ]; then
+            save_binary_artifacts "$target" "$description"
+        fi
         print_success "Build completed successfully for $target"
         return 0
     else
@@ -154,7 +176,8 @@ check_ota_headroom() {
     local build_dir="${TARGET_BUILD_DIR[$target]:-build}"
 
     if python3 "$SCRIPT_DIR/tools/check_app_size.py" "$build_dir" \
-            --name "$target" --limit "$OTA_MAX_PERCENT"; then
+            --name "$target" --limit "$OTA_MAX_PERCENT" \
+            --baseline "firmware_$target/esp32_nat_router.bin"; then
         return 0
     fi
     print_error "Free flash before publishing — see 'idf.py size-components'."
@@ -250,23 +273,64 @@ check_idf_env() {
     fi
 }
 
+usage() {
+    # The header comment above is the help text; print it up to the first line
+    # that is not a comment, so the two cannot drift apart.
+    awk 'NR>2 && /^#/ { sub(/^# ?/, ""); print; next } NR>2 { exit }' "${BASH_SOURCE[0]}"
+    echo "Targets: ${BUILD_ORDER[*]}"
+}
+
+# Reads flags and target names; leaves SELECTED_TARGETS holding what to build.
+parse_args() {
+    SELECTED_TARGETS=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --clean) DO_CLEAN=true ;;
+            --save)  DO_SAVE=true ;;
+            -h|--help) usage; exit 0 ;;
+            -*)
+                print_error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+            *)
+                if [ -z "${TARGET_CHIP[$1]:-}" ]; then
+                    print_error "Unknown target: $1"
+                    print_error "Available: ${BUILD_ORDER[*]}"
+                    exit 1
+                fi
+                SELECTED_TARGETS+=("$1")
+                ;;
+        esac
+        shift
+    done
+
+    if [ ${#SELECTED_TARGETS[@]} -eq 0 ]; then
+        SELECTED_TARGETS=("${BUILD_ORDER[@]}")
+    fi
+}
+
 # Main script execution
 main() {
+    parse_args "$@"
+
     print_status "ESP32 NAT Router Multi-Target Build Script"
     print_status "=========================================="
-    
+
     # Check if ESP-IDF environment is set up
     check_idf_env
-    
+
     cd "$SCRIPT_DIR"
-    
+
     print_status "Working directory: $(pwd)"
-    
+    print_status "Targets: ${SELECTED_TARGETS[*]}"
+    [ "$DO_SAVE" = true ] && print_warning "--save: firmware_*/ will be overwritten"
+
     # Array to store failed targets
     FAILED_TARGETS=()
 
     # Build for each target
-    for target in "${BUILD_ORDER[@]}"; do
+    for target in "${SELECTED_TARGETS[@]}"; do
         description="${TARGET_DESC[$target]}"
         echo ""
         print_status "=========================================="
@@ -279,25 +343,30 @@ main() {
     done
     
     # Final summary
+    echo ""
     print_status "=========================================="
     print_status "Build Summary"
     print_status "=========================================="
-    
+
+    # Sizes of what was just built, next to the image currently published in
+    # firmware_<target>/, so the run answers "what did this cost or save".
+    for target in "${SELECTED_TARGETS[@]}"; do
+        build_dir="${TARGET_BUILD_DIR[$target]:-build}"
+        if [ -f "$build_dir/esp32_nat_router.bin" ]; then
+            python3 "$SCRIPT_DIR/tools/check_app_size.py" "$build_dir" \
+                --name "$target" --limit 100 \
+                --baseline "firmware_$target/esp32_nat_router.bin" || true
+        fi
+    done
+
+    echo ""
     if [ ${#FAILED_TARGETS[@]} -eq 0 ]; then
-        print_success "All targets built successfully!"
-        print_status "Binary artifacts are preserved in firmware directories:"
-        for target in "${BUILD_ORDER[@]}"; do
-            artifacts_dir="firmware_$target"
-            if [ -d "$artifacts_dir" ]; then
-                print_status "  - $artifacts_dir/ (preserved)"
-            fi
-        done
-        print_status "Build directories (will be cleaned on next build):"
-        for target in "${BUILD_ORDER[@]}"; do
-            if [ -d "build/$target" ]; then
-                print_status "  - build/$target/"
-            fi
-        done
+        print_success "All targets built successfully: ${SELECTED_TARGETS[*]}"
+        if [ "$DO_SAVE" = true ]; then
+            print_status "firmware_*/ updated. Review with 'git status' before committing."
+        else
+            print_status "Repository untouched. Pass --save to refresh firmware_*/."
+        fi
     else
         print_error "Build failed for ${#FAILED_TARGETS[@]} target(s):"
         for failed_target in "${FAILED_TARGETS[@]}"; do
@@ -305,45 +374,6 @@ main() {
         done
         exit 1
     fi
-    
-    # Show preserved binary sizes
-    echo ""
-    print_status "Preserved Binary Sizes:"
-    print_status "======================="
-    for target in "${BUILD_ORDER[@]}"; do
-        artifacts_dir="firmware_$target"
-        if [ -f "$artifacts_dir/esp32_nat_router.bin" ]; then
-            size=$(stat -f%z "$artifacts_dir/esp32_nat_router.bin" 2>/dev/null || stat -c%s "$artifacts_dir/esp32_nat_router.bin" 2>/dev/null || echo "unknown")
-            print_status "  $target: $size bytes ($artifacts_dir/esp32_nat_router.bin)"
-        fi
-    done
-    
-    # Show total size of all preserved artifacts
-    echo ""
-    total_size=0
-    for target in "${BUILD_ORDER[@]}"; do
-        artifacts_dir="firmware_$target"
-        if [ -d "$artifacts_dir" ]; then
-            for bin_file in "$artifacts_dir"/*.bin; do
-                if [ -f "$bin_file" ]; then
-                    size=$(stat -f%z "$bin_file" 2>/dev/null || stat -c%s "$bin_file" 2>/dev/null || echo "0")
-                    total_size=$((total_size + size))
-                fi
-            done
-        fi
-    done
-    
-    if [ $total_size -gt 0 ]; then
-        if command -v numfmt &> /dev/null; then
-            human_size=$(numfmt --to=iec $total_size)
-        else
-            human_size="${total_size} bytes"
-        fi
-        print_status "Total preserved artifacts: $human_size"
-    fi
-    
-    print_success "Multi-target build script completed!"
-    print_status "Binary artifacts are preserved in firmware_* directories and will not be cleaned."
 }
 
 # Handle script interruption

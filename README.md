@@ -112,13 +112,56 @@ Full documentation is available in the [Wiki](https://github.com/martin-ger/esp3
 
 ## Building from Source
 
+Needs ESP-IDF v5.5. On Debian and Ubuntu install `python3-venv` first —
+ESP-IDF's own `install.sh` fails without it, and not obviously.
+
 ```bash
-idf.py menuconfig    # Enable LWIP IP forwarding, NAT, and L2-to-L3 copy
-idf.py build
-idf.py flash monitor
+. $IDF_PATH/export.sh          # once per shell
 ```
 
-See the [Building](https://github.com/martin-ger/esp32_nat_router/wiki/Building) wiki page for PlatformIO, WT32-ETH01, and multi-target build instructions.
+`build_all_targets.sh` builds a target and reports how much of the OTA slot
+the image uses. Builds are incremental and nothing in the repository is
+touched, so it is safe to run just to check that a change still compiles:
+
+```bash
+./build_all_targets.sh esp32c3              # one target
+./build_all_targets.sh esp32c3 wt32_eth01   # WiFi and Ethernet variants
+./build_all_targets.sh                      # all seven
+./build_all_targets.sh --clean esp32c3      # full rebuild
+./build_all_targets.sh --save               # also refresh firmware_*/
+./build_all_targets.sh --help
+```
+
+Each build prints its size against the image published in `firmware_<target>/`:
+
+```
+esp32c3: 1490000 / 1572864 bytes in 'ota_0' (94.7%, 82864 free)
+         was 1564160 (99.4%), -74160 bytes
+```
+
+The build fails past 95% of the slot. That guard exists because the C3 and C5
+images had reached 99.4% and 99.6% with nothing watching.
+
+Without the script:
+
+```bash
+idf.py -B build_esp32c3 -D SDKCONFIG=sdkconfig.esp32c3 \
+       -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c3" \
+       set-target esp32c3
+idf.py -B build_esp32c3 -D SDKCONFIG=sdkconfig.esp32c3 \
+       -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c3" build
+```
+
+Every target needs its own `SDKCONFIG_DEFAULTS` chain; without it `idf.py`
+falls back to the shared defaults and silently drops the per-target settings.
+The chains are listed in `TARGET_SDKCONFIG` in the script. Ethernet boards
+additionally take `sdkconfig.defaults.eth_common`.
+
+There is a GitHub Actions workflow in `.github/workflows/build.yml` that runs
+the same matrix and the same size check, but it is currently manual-only —
+see the note at the top of that file.
+
+See the [Building](https://github.com/martin-ger/esp32_nat_router/wiki/Building) wiki page for PlatformIO and WT32-ETH01 details.
 
 ## Performance
 

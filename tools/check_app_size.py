@@ -48,6 +48,8 @@ def main():
     ap.add_argument("--limit", type=int, default=95,
                     help="fail at or above this percentage (default: 95)")
     ap.add_argument("--name", default=None, help="label used in the output")
+    ap.add_argument("--baseline", default=None,
+                    help="previously published .bin to compare against")
     ap.add_argument("--summary", action="store_true",
                     help="append a row to $GITHUB_STEP_SUMMARY")
     args = ap.parse_args()
@@ -70,6 +72,14 @@ def main():
 
     print(f"{name}: {size} / {slot} bytes in '{label}' "
           f"({percent:.1f}%, {free} free)")
+
+    # Against the image currently published in firmware_<target>/, so a build
+    # answers "how much did this actually save" and not just "does it fit".
+    if args.baseline and os.path.isfile(args.baseline):
+        was = os.path.getsize(args.baseline)
+        delta = size - was
+        print(f"{' ' * len(name)}  was {was} ({was * 100.0 / slot:.1f}%), "
+              f"{'+' if delta > 0 else ''}{delta} bytes")
 
     if args.summary and os.environ.get("GITHUB_STEP_SUMMARY"):
         state = "over" if percent >= args.limit else "ok"
