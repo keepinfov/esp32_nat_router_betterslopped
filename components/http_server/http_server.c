@@ -1460,90 +1460,82 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     char row[512];
 
     /* --- Begin chunked response --- */
-    SEND_CHUNK(req, INDEX_CHUNK_HEAD, HTTPD_RESP_USE_STRLEN);
+    send_page_head(req, INDEX_TITLE, TAB_HOME, authenticated);
 
-    /* Stream logout button if authenticated */
-    if (authenticated) {
-        SEND_CHUNK(req,
-            "<div style='text-align: right; margin-bottom: 0.5rem;'>"
-            "<a href='/?logout=1' style='padding: 0.4rem 1rem; background: rgba(255,82,82,0.15); color: #ff5252; border: 1px solid #ff5252; border-radius: 6px; text-decoration: none; font-size: 0.85rem; font-weight: 500;'>Logout</a>"
-            "</div>", HTTPD_RESP_USE_STRLEN);
-    }
-
-    /* Open status table */
     SEND_CHUNK(req, INDEX_CHUNK_STATUS_OPEN, HTTPD_RESP_USE_STRLEN);
 
     /* Stream AP status rows */
     if (ap_disabled) {
         SEND_CHUNK(req,
-            "<tr><td>AP Interface:</td><td><strong style='color:#ff5252;'>Disabled</strong></td></tr>",
+            "<tr><td>AP interface</td><td><span class=\"bd er\">Disabled</span></td></tr>",
             HTTPD_RESP_USE_STRLEN);
     } else {
         char* safe_ap_ssid = html_escape(ap_ssid);
         if (safe_ap_ssid == NULL) safe_ap_ssid = strdup("(unknown)");
-        snprintf(row, sizeof(row), "<tr><td>SSID:</td><td><strong>%s</strong></td></tr>", safe_ap_ssid);
+        snprintf(row, sizeof(row), "<tr><td>SSID</td><td><strong>%s</strong></td></tr>",
+                 safe_ap_ssid ? safe_ap_ssid : "");
         /* Free before SEND_CHUNK: a bail-out on a dead client returns immediately. */
         free(safe_ap_ssid);
         SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
         esp_ip4_addr_t ap_addr;
         ap_addr.addr = my_ap_ip;
-        snprintf(row, sizeof(row), "<tr><td>AP IP:</td><td>" IPSTR "</td></tr>", IP2STR(&ap_addr));
+        snprintf(row, sizeof(row), "<tr><td>AP address</td><td>" IPSTR "</td></tr>", IP2STR(&ap_addr));
         SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
         resync_connect_count();
-        snprintf(row, sizeof(row), "<tr><td>AP Clients:</td><td>%d</td></tr>", connect_count);
+        snprintf(row, sizeof(row), "<tr><td>Clients</td><td>%d</td></tr>", connect_count);
         SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
     }
 
     /* Stream Uplink row */
 #if CONFIG_ETH_UPLINK
-    if (ap_connect) {
-        SEND_CHUNK(req, "<tr><td>Uplink:</td><td><strong>Ethernet Connected</strong></td></tr>", HTTPD_RESP_USE_STRLEN);
-    } else {
-        SEND_CHUNK(req, "<tr><td>Uplink:</td><td><strong>Ethernet Disconnected</strong></td></tr>", HTTPD_RESP_USE_STRLEN);
-    }
+    SEND_CHUNK(req, ap_connect
+        ? "<tr><td>Uplink</td><td><span class=\"bd ok\">Ethernet connected</span></td></tr>"
+        : "<tr><td>Uplink</td><td><span class=\"bd er\">Ethernet disconnected</span></td></tr>",
+        HTTPD_RESP_USE_STRLEN);
 #else
     if (ap_connect) {
         wifi_ap_record_t ap_info;
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-            snprintf(row, sizeof(row), "<tr><td>Uplink:</td><td><strong>Connected (%d dBm)</strong></td></tr>", ap_info.rssi);
+            snprintf(row, sizeof(row),
+                     "<tr><td>Uplink</td><td><span class=\"bd ok\">Connected</span> "
+                     "<span class=n>%d dBm</span></td></tr>", ap_info.rssi);
             SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
         } else {
-            SEND_CHUNK(req, "<tr><td>Uplink:</td><td><strong>Connected</strong></td></tr>", HTTPD_RESP_USE_STRLEN);
+            SEND_CHUNK(req, "<tr><td>Uplink</td><td><span class=\"bd ok\">Connected</span></td></tr>",
+                       HTTPD_RESP_USE_STRLEN);
         }
     } else {
-        SEND_CHUNK(req, "<tr><td>Uplink:</td><td><strong>Disconnected</strong></td></tr>", HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, "<tr><td>Uplink</td><td><span class=\"bd er\">Disconnected</span></td></tr>",
+                   HTTPD_RESP_USE_STRLEN);
     }
 #endif
 
     /* Stream uplink IP row */
+#if CONFIG_ETH_UPLINK
+    const char *uplink_label = "Ethernet address";
+#else
+    const char *uplink_label = "Uplink address";
+#endif
     if (ap_connect) {
         esp_ip4_addr_t addr;
         addr.addr = my_ip;
-#if CONFIG_ETH_UPLINK
-        snprintf(row, sizeof(row), "<tr><td>ETH IP:</td><td>" IPSTR "</td></tr>", IP2STR(&addr));
-#else
-        snprintf(row, sizeof(row), "<tr><td>STA IP:</td><td>" IPSTR "</td></tr>", IP2STR(&addr));
-#endif
+        snprintf(row, sizeof(row), "<tr><td>%s</td><td>" IPSTR "</td></tr>",
+                 uplink_label, IP2STR(&addr));
     } else {
-#if CONFIG_ETH_UPLINK
-        snprintf(row, sizeof(row), "<tr><td>ETH IP:</td><td>N/A</td></tr>");
-#else
-        snprintf(row, sizeof(row), "<tr><td>STA IP:</td><td>N/A</td></tr>");
-#endif
+        snprintf(row, sizeof(row), "<tr><td>%s</td><td class=n>not assigned</td></tr>", uplink_label);
     }
     SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
     /* Stream VPN status row */
     if (vpn_enabled) {
-        if (vpn_is_connected()) {
-            snprintf(row, sizeof(row), "<tr><td>VPN:</td><td><span style='color: #4caf50;'>Connected</span></td></tr>");
-        } else if (vpn_connected) {
-            snprintf(row, sizeof(row), "<tr><td>VPN:</td><td><span style='color: #ffc107;'>Handshake Pending</span></td></tr>");
-        } else {
-            snprintf(row, sizeof(row), "<tr><td>VPN:</td><td><span style='color: #f44336;'>Disconnected</span></td></tr>");
-        }
+        const char *vpn_cls, *vpn_txt;
+        if (vpn_is_connected())   { vpn_cls = "ok"; vpn_txt = "Connected"; }
+        else if (vpn_connected)   { vpn_cls = "wn"; vpn_txt = "Handshake pending"; }
+        else                      { vpn_cls = "er"; vpn_txt = "Disconnected"; }
+        snprintf(row, sizeof(row), "<tr><td>VPN</td><td><span class=\"bd %s\">%s</span></td></tr>",
+                 vpn_cls, vpn_txt);
         SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
     }
 
@@ -1553,20 +1545,21 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     char sent_buf[16], recv_buf[16];
     format_bytes_human(bytes_sent, sent_buf, sizeof(sent_buf));
     format_bytes_human(bytes_received, recv_buf, sizeof(recv_buf));
-    snprintf(row, sizeof(row), "<tr><td>Bytes:</td><td>%s sent / %s received</td></tr>", sent_buf, recv_buf);
+    snprintf(row, sizeof(row), "<tr><td>Traffic</td><td>%s sent, %s received</td></tr>",
+             sent_buf, recv_buf);
     SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
     /* Stream Monitoring row */
     pcap_capture_mode_t mode = pcap_get_mode();
     if (mode != PCAP_MODE_OFF) {
-        const char* mode_name = (mode == PCAP_MODE_ACL_MONITOR) ? "ACL Monitor" : "Promiscuous";
         snprintf(row, sizeof(row),
-                 "<tr><td>Monitoring:</td><td><span style='color: #4caf50;'>%s</span> (%lu captured, %lu dropped)</td></tr>",
-                 mode_name,
+                 "<tr><td>Monitoring</td><td><span class=\"bd ok\">%s</span> "
+                 "<span class=n>%lu captured, %lu dropped</span></td></tr>",
+                 (mode == PCAP_MODE_ACL_MONITOR) ? "ACL monitor" : "Promiscuous",
                  (unsigned long)pcap_get_captured_count(),
                  (unsigned long)pcap_get_dropped_count());
     } else {
-        snprintf(row, sizeof(row), "<tr><td>Monitoring:</td><td><span style='color: #888;'>Off</span></td></tr>");
+        snprintf(row, sizeof(row), "<tr><td>Monitoring</td><td class=n>Off</td></tr>");
     }
     SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
@@ -1575,89 +1568,64 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     format_uptime(get_uptime_seconds(), uptime_str, sizeof(uptime_str));
     char boot_time_str[32];
     format_boot_time(boot_time_str, sizeof(boot_time_str));
-    snprintf(row, sizeof(row), "<tr><td>Uptime:</td><td>%s (since %s)</td></tr>", uptime_str, boot_time_str);
+    snprintf(row, sizeof(row), "<tr><td>Uptime</td><td>%s <span class=n>since %s</span></td></tr>",
+             uptime_str, boot_time_str);
     SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
-    /* Close status table */
     SEND_CHUNK(req, INDEX_CHUNK_STATUS_CLOSE, HTTPD_RESP_USE_STRLEN);
 
-    /* Navigation buttons */
-    SEND_CHUNK(req, INDEX_CHUNK_BUTTONS, HTTPD_RESP_USE_STRLEN);
+    /* --- Auth UI --- */
 
-    /* --- Auth UI Section (streamed directly) --- */
-
-    /* Show message if any */
     if (login_message[0] != '\0') {
-        const char* msg_style;
-        if (strstr(login_message, "ERROR") != NULL) {
-            msg_style = "background: #ffebee; color: #c62828; border: 2px solid #ef5350";
-        } else {
-            msg_style = "background: #e8f5e9; color: #2e7d32; border: 2px solid #66bb6a";
-        }
-        snprintf(row, sizeof(row),
-                 "<div style='margin-top: 1.5rem; padding: 1rem; %s; border-radius: 8px; font-size: 0.95rem;'>%s</div>",
-                 msg_style, login_message);
+        /* login_message is built from fixed strings only, never from request
+         * data, so it needs no escaping here. */
+        snprintf(row, sizeof(row), "<p class=\"al %s\">%s</p>",
+                 strstr(login_message, "ERROR") ? "er" : "ok", login_message);
         SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Show warning if no password protection */
     if (!password_protection_enabled) {
         SEND_CHUNK(req,
-            "<div style='margin-top: 1.5rem; padding: 1rem; background: #fff3cd; border: 2px solid #ffa726; border-radius: 8px;'>"
-            "<strong style='color: #f57c00;'>⚠ No Password Protection</strong>"
-            "<p style='margin-top: 0.5rem; color: #666; font-size: 0.9rem;'>Anyone on this network can access router settings. Set a password below.</p>"
-            "</div>", HTTPD_RESP_USE_STRLEN);
+            "<p class=\"al wn\"><strong>No password set.</strong> "
+            "Anyone on this network can change the router's settings.</p>",
+            HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Show login form if password is set and not authenticated */
     if (password_protection_enabled && !authenticated) {
         SEND_CHUNK(req,
-            "<div style='margin-top: 1.5rem; padding: 1.5rem; background: rgba(22, 33, 62, 0.6); border: 1px solid rgba(0, 217, 255, 0.2); border-radius: 12px;'>"
-            "<h2 style='margin-top: 0; margin-bottom: 1rem; color: #00d9ff; font-size: 1.1rem;'>🔒 Login Required</h2>"
-            "<form action='/' method='POST'>"
+            "<div class=c><h2>Sign in</h2>"
+            "<form action=/ method=POST class=f>"
             /* Hidden username field gives iOS/Safari and password managers an account
              * to associate the saved password with, so AutoFill works on this
              * password-only login instead of demanding a username. */
-            "<input type='text' name='username' value='admin' autocomplete='username' style='display:none' aria-hidden='true' tabindex='-1'/>"
-            "<input type='password' name='login_password' placeholder='Enter password' autocomplete='current-password' style='width: 100%; padding: 0.75rem; margin-bottom: 0.75rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(0,217,255,0.3); border-radius: 8px; color: #e0e0e0; font-size: 1rem;'/>"
-            "<input type='submit' value='Login' style='width: 100%; padding: 0.75rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;'/>"
-            "</form>"
-            "</div>", HTTPD_RESP_USE_STRLEN);
+            "<input type=text name=username value=admin autocomplete=username "
+            "style=display:none aria-hidden=true tabindex=-1>"
+            "<label for=pw>Password</label>"
+            "<input id=pw type=password name=login_password autocomplete=current-password>"
+            "<button class=\"b p\" type=submit style=grid-column:2>Sign in</button>"
+            "</form></div>", HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Show password management form if authenticated or no password set */
     if (authenticated || !password_protection_enabled) {
-        const char* form_title = password_protection_enabled ? "Change Password" : "Set Password";
-        SEND_CHUNK(req,
-            "<div style='margin-top: 1.5rem; padding: 1.5rem; background: rgba(22, 33, 62, 0.6); border: 1px solid rgba(0, 217, 255, 0.2); border-radius: 12px;'>"
-            "<h2 style='margin-top: 0; margin-bottom: 1rem; color: #00d9ff; font-size: 1.1rem;'>🔑 ", HTTPD_RESP_USE_STRLEN);
+        const char* form_title = password_protection_enabled ? "Change password" : "Set a password";
+        SEND_CHUNK(req, "<div class=c><h2>", HTTPD_RESP_USE_STRLEN);
         SEND_CHUNK(req, form_title, HTTPD_RESP_USE_STRLEN);
         SEND_CHUNK(req,
             "</h2>"
             /* POST keeps the new password out of the URL and makes the Origin-header
              * CSRF check effective (browsers send Origin on POST but not GET). */
-            "<form action='/' method='POST'>"
-            "<input type='password' name='new_password' placeholder='New password (empty to disable)' autocomplete='new-password' style='width: 100%; padding: 0.75rem; margin-bottom: 0.75rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(0,217,255,0.3); border-radius: 8px; color: #e0e0e0; font-size: 1rem;'/>"
-            "<input type='password' name='confirm_password' placeholder='Confirm password' autocomplete='new-password' style='width: 100%; padding: 0.75rem; margin-bottom: 0.75rem; background: rgba(255,255,255,0.1); border: 1px solid rgba(0,217,255,0.3); border-radius: 8px; color: #e0e0e0; font-size: 1rem;'/>"
-            "<input type='submit' value='", HTTPD_RESP_USE_STRLEN);
+            "<form action=/ method=POST class=f>"
+            "<label for=np>New password</label>"
+            "<input id=np type=password name=new_password autocomplete=new-password>"
+            "<label for=cp>Repeat</label>"
+            "<input id=cp type=password name=confirm_password autocomplete=new-password>"
+            "<p class=hint>Leave both empty to turn password protection off.</p>"
+            "<button class=\"b p\" type=submit style=grid-column:2>", HTTPD_RESP_USE_STRLEN);
         SEND_CHUNK(req, form_title, HTTPD_RESP_USE_STRLEN);
-        SEND_CHUNK(req,
-            "' style='width: 100%; padding: 0.75rem; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;'/>"
-            "<p style='margin-top: 0.75rem; color: #888; font-size: 0.85rem;'>Leave empty to disable password protection.</p>"
-            "</form>"
-            "</div>", HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, "</button></form></div>", HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Footer */
-    {
-        const esp_app_desc_t *app_desc = esp_app_get_description();
-        char footer[512];
-        snprintf(footer, sizeof(footer), INDEX_CHUNK_TAIL,
-                 app_desc ? app_desc->version : "unknown",
-                 app_desc ? app_desc->date : "",
-                 app_desc ? app_desc->time : "");
-        SEND_CHUNK(req, footer, HTTPD_RESP_USE_STRLEN);
-    }
+    send_page_foot(req);
 
     /* End chunked response */
     SEND_CHUNK(req, NULL, 0);
