@@ -10,6 +10,20 @@ CONFIG_LWIP_IRAM_OPTIMIZATION=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 CONFIG_BOOTLOADER_LOG_LEVEL=2
 
+# Reduce static log level. LOG_MAXIMUM_LEVEL follows DEFAULT, so every
+# ESP_LOGI/ESP_LOGD string is dropped from the binary rather than merely
+# silenced. ota_0 is 1536K and the C3/C5 builds were sitting above 99% of it.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL=2
+
+# assert() aborts without the __FILE__/expression strings
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=1
+
+# esp_err_to_name() returns the numeric code instead of carrying the full
+# error-string table
+CONFIG_ESP_ERR_TO_NAME_LOOKUP=n
+
 # Increase main task stack size
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=7168
 

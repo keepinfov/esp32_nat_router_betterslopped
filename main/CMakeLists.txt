@@ -19,4 +19,6 @@ idf_component_register(SRCS "esp32_nat_router.c"
                             "led_strip_status.c"
                     INCLUDE_DIRS "."
                     PRIV_REQUIRES ${main_priv_requires})
-target_compile_options(__idf_main PRIVATE -O2)
+# main/ holds setup and event handling, not the packet forwarding path (that
+# lives in lwIP/WiFi IRAM), so size wins here cost nothing in throughput.
+target_compile_options(__idf_main PRIVATE -Os)
