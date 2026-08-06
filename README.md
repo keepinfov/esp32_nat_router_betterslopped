@@ -81,6 +81,11 @@ esptool.py --chip esp32 \
 
 Pre-built binaries are available for: **ESP32**, **ESP32-C3**, **ESP32-C5**, **ESP32-C6**, **ESP32-S3**, and **WT32-ETH01** (Ethernet).
 
+> **Note:** the committed `firmware_*` binaries lag the source tree — each
+> directory's `build_info.txt` records the commit it was built from. Check it
+> against `git log` before flashing, or build from source, if you need a fix
+> that landed more recently.
+
 See the [Installation](https://github.com/martin-ger/esp32_nat_router/wiki/Installation) wiki page for all chip-specific commands.
 
 ## Documentation

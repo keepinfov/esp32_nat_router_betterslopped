@@ -1,10 +1,70 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working with code in this
+repository.
 
-## Code Exploration Policy
-Always use jCodemunch-MCP tools — never fall back to Read, Grep, Glob, or Bash for code exploration.
-- Before reading a file: use get_file_outline or get_file_content
-- Before searching: use search_symbols or search_text
-- Before exploring structure: use get_file_tree or get_repo_outline
-- Call resolve_repo with the current directory first; if not indexed, call index_folder.
+## What this is
+
+ESP32 NAT router firmware built on ESP-IDF 5.5. An AP interface is bridged to a
+WiFi STA, Ethernet, or WireGuard uplink with NAT. Configuration happens through
+a web UI, a serial console, or an optional TCP console.
+
+- `main/` — startup, WiFi/Ethernet event handling, NAT hooks, DHCP, VPN, LED
+- `components/http_server/` — web UI: handlers in `http_server.c`, page
+  fragments in `pages/`, static assets in `www/`
+- `components/cmd_router/`, `cmd_system/` — console commands and the NVS
+  configuration helpers (`get_config_param_*`) that the web UI also calls
+- `components/acl/`, `pcap_capture/`, `syslog/`, `mqtt_ha/`, `oled_display/`,
+  `remote_console/` — optional features
+- `components/dhcpserver/` — fork of the IDF component, adds MAC reservations
+  and hostname capture
+- `esp_nat_bridge.py` — MCP bridge that drives the router over its TCP console
+
+## Flash budget — read this before adding anything
+
+`ota_0` is 1536 KiB (`partitions_example.csv`). The ESP32-C3 and ESP32-C5
+images have run within a few kilobytes of that ceiling, which is why
+`build_all_targets.sh` fails the build past 95%. Before adding a feature, check
+`idf.py size` and `idf.py size-components`, and prefer making a new subsystem
+conditional over compiling it unconditionally.
+
+Two things cost more than they look: log strings — the shared
+`sdkconfig.defaults` sets `LOG_DEFAULT_LEVEL_WARN` so `ESP_LOGI` is compiled
+out entirely — and anything embedded as a C array. Static web assets belong in
+`components/http_server/www/`, where the build gzips and embeds them.
+
+## Building
+
+```bash
+idf.py set-target esp32c3
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32c3" build
+```
+
+All targets at once: `./build_all_targets.sh`. Each target has its own build
+directory, its own `sdkconfig`, and an entry in `TARGET_SDKCONFIG` — a target
+without one silently loses its overrides. Ethernet boards additionally take
+`sdkconfig.defaults.eth_common`.
+
+## Web UI conventions
+
+- One stylesheet, `components/http_server/www/app.css`, served gzipped at
+  `/app.css`. Do not add `<style>` blocks to page templates.
+- Shared chrome comes from `send_page_head()` / `send_page_foot()`; a page
+  emits only its own body.
+- Templates are printf format strings. A fragment with no substitutions goes to
+  `SEND_CHUNK` verbatim; only fragments with real conversions go through
+  `snprintf`. That is what keeps doubled `%%` escapes out of the markup.
+- `SEND_CHUNK` returns on the first failed chunk, so a handler must not hold a
+  heap allocation across a chunk loop — free it first, or use a local macro
+  that releases it on the way out (see `scan_get_handler`).
+- Anything originating outside the firmware — client hostnames, query
+  parameters, stored configuration — must be escaped or filtered before it
+  reaches a page.
+
+## Code exploration
+
+Prefer the jCodemunch MCP tools (`get_file_outline`, `search_symbols`,
+`get_repo_outline`) when they are available in the session: call `resolve_repo`
+on the working directory first, and `index_folder` if the repository is not
+indexed yet. When those tools are not present — which is the common case — the
+built-in Read, Grep, and Glob tools are the intended fallback, not a violation.
