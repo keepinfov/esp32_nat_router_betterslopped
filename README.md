@@ -53,7 +53,7 @@ After first boot the ESP32 NAT Router will offer a WiFi network with an open AP 
 3. Configure your upstream WiFi and AP settings on the Getting Started page
 4. Click **Save & Reboot**
 
-<img src="https://raw.githubusercontent.com/martin-ger/esp32_nat_router/master/UI_Index.png">
+<img src="docs/img/ui-status-light.png" alt="Status page after first boot">
 
 ## Flashing Pre-built Binaries
 
@@ -125,6 +125,68 @@ See the [Building](https://github.com/martin-ger/esp32_nat_router/wiki/Building)
 The performance of the Router depends on several factors, of course including WiFi signal strength and congestion of the used frequencies. Expect something in the range from 5 - 15 mbps under reasonable conditions. Single video streams should be possible, but it is not intended as a 2$ full replacement for a professional home router.
 
 Internally the speed depends on the processing power of the used ESP32 chip (single core vs. dual core, clock speed) and available RAM for buffering. All "hot pathes", i.e. the direct routing of packets are optimized, any additional features, especially VPN, ACL processing, per client statistics, and packet capturing, introduce some delays. If you need maximum speed, dynamically disable all unused features in the configuration. However in default config everything is already disabled, the only major feature, that is running, is the web interface. Especially on the C3 and C5 with small RAM (and combined DRAM and IRAM) disabling it can result in an additional performance boost, due to the additional buffer space. If required, you can re-enable it via the remote console at any time (with a reboot).
+
+## The Web Interface
+
+The router is configured from a browser — no app, no cloud account, nothing to
+install. Point any device on the network at `http://esp32-nat-router.local`
+(or the AP address, `192.168.4.1` by default).
+
+### What it looks like
+
+The panel follows your device's light or dark setting automatically.
+
+| Light | Dark |
+|---|---|
+| <img src="docs/img/ui-status-light.png" alt="Status page, light theme"> | <img src="docs/img/ui-status-dark.png" alt="Status page, dark theme"> |
+
+Every page carries the same tab bar, so moving between settings is one click:
+
+<img src="docs/img/ui-scan-dark.png" alt="WiFi scan page">
+
+On a phone the tables fold into one compact block per record — every field
+stays visible, and nothing scrolls sideways:
+
+<p>
+<img src="docs/img/ui-status-phone.png" alt="Status page on a phone" width="300">
+<img src="docs/img/ui-scan-phone.png" alt="WiFi scan on a phone" width="300">
+</p>
+
+### What changed
+
+The interface was rebuilt in 2026. If you are coming from an older build,
+these are the differences you will notice:
+
+| | Before | Now |
+|---|---|---|
+| **Navigation** | Six buttons on the home page; every other page had a single "Home" button at the bottom, so any two settings pages were two clicks apart | A tab bar on every page |
+| **Theme** | Dark only, with a light-yellow warning card sitting in the middle of it | Follows your system's light or dark setting |
+| **On a phone** | Wide tables ran off the edge of the screen, and pinch-zoom was disabled, so there was no way to see the rest | Records fold into a compact block; every field fits, zoom works |
+| **Page weight** | Each page re-sent its own copy of the stylesheet, about 24 KB in total across the seven pages | One stylesheet, 1.3 KB, cached after the first page |
+| **Scan page** | Reloaded itself every 15 seconds, losing your scroll position each time | Reloads only while a scan is actually running |
+| **Signal strength** | Coloured bars | Spelled out — "Excellent", "Fair", "Weak" — so it reads on a monochrome screen and to a screen reader |
+| **Look** | Purple-to-pink gradient buttons, emoji labels, glowing headings | Flat surfaces, one accent colour, system font |
+
+### Under the hood
+
+Some of the rebuild is not visible but matters if you run this on an open
+network:
+
+- Client device names supplied over DHCP are filtered before they are shown.
+  Previously a device could set its own hostname to a fragment of JavaScript
+  and have it run in the administrator's browser.
+- The session cookie is `HttpOnly`, the session token is compared in constant
+  time, and the cookie is matched by name rather than by substring.
+- Unencrypted configuration backups no longer contain the hash of the web
+  password or the MQTT credential.
+- Passwords, the WireGuard private key and the pre-shared key no longer appear
+  in the console log.
+
+Two things are still on the way: the Config, Mappings, Firewall, VPN and Setup
+pages have not been moved to the new layout yet and still look like the older
+build, and the pages that change settings still do so through GET requests,
+which a hostile website could trigger. Set a web UI password, and prefer
+binding the interface to the AP only, until that lands.
 
 ## Licence
 

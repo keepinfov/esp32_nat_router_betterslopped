@@ -162,7 +162,10 @@ input::placeholder { color: var(--fg2); opacity: .75 }
 .t th, .t td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--ln) }
 .t th { color: var(--fg2); font-size: .8rem; font-weight: 600; white-space: nowrap }
 .t tr:last-child td { border-bottom: 0 }
-.t td.n { color: var(--fg2) }
+
+/* Secondary text: a unit, a timestamp, an "off". Not table-specific — it is
+   used inside cells and inline in spans alike. */
+.n { color: var(--fg2) }
 
 /* Key/value readouts reuse .t with the label column muted. */
 .t.kv td:first-child { color: var(--fg2); width: 40% }
