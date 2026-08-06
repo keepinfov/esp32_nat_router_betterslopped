@@ -120,15 +120,28 @@ void client_stats_reset_all(void) {
     }
 }
 
+/* One decimal place, computed in integers.
+ *
+ * The tenths are worked out by hand rather than handed to "%.1f" because the
+ * build asks for newlib's nano printf, which has no floating-point conversions
+ * at all — a "%.1f" there prints nothing useful.  Nor does it have 64-bit
+ * conversions, which is why the byte count is narrowed before it is printed:
+ * anything reaching the last branch is below 1024 by construction. */
 void format_bytes_human(uint64_t bytes, char *buf, size_t len) {
-    if (bytes >= 1073741824ULL)
-        snprintf(buf, len, "%.1f GB", (double)bytes / 1073741824.0);
-    else if (bytes >= 1048576ULL)
-        snprintf(buf, len, "%.1f MB", (double)bytes / 1048576.0);
-    else if (bytes >= 1024ULL)
-        snprintf(buf, len, "%.1f KB", (double)bytes / 1024.0);
-    else
-        snprintf(buf, len, "%" PRIu64 " B", bytes);
+    const char *unit;
+    uint64_t divisor;
+
+    if (bytes >= 1073741824ULL)      { unit = "GB"; divisor = 1073741824ULL; }
+    else if (bytes >= 1048576ULL)    { unit = "MB"; divisor = 1048576ULL; }
+    else if (bytes >= 1024ULL)       { unit = "KB"; divisor = 1024ULL; }
+    else {
+        snprintf(buf, len, "%u B", (unsigned)bytes);
+        return;
+    }
+
+    uint64_t tenths = (bytes * 10ULL) / divisor;
+    snprintf(buf, len, "%u.%u %s",
+             (unsigned)(tenths / 10), (unsigned)(tenths % 10), unit);
 }
 
 // Hook function to count received bytes via netif input and ACL check

@@ -48,6 +48,14 @@ CONFIG_LWIP_IPV4_NAPT=y
 # DHCP server
 CONFIG_LWIP_DHCPS_MAX_STATION_NUM=16
 
+# Use the printf/scanf that already sit in ROM.  They are the "nano" build,
+# which has neither floating-point nor 64-bit conversions — the reason this
+# tree formats tenths by hand rather than with "%.1f" — but linking them keeps
+# the full versions out of the image entirely.  The C6 turns this back off:
+# its ROM carries the full versions instead, so nano there would add a second
+# copy rather than remove one.
+CONFIG_LIBC_NEWLIB_NANO_FORMAT=y
+
 # Wi-Fi
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=48

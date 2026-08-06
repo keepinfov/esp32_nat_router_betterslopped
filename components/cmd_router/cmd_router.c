@@ -1513,7 +1513,13 @@ static int show(int argc, char **argv)
                 float celsius = 0.0f;
                 temperature_sensor_enable(tsens);
                 if (temperature_sensor_get_celsius(tsens, &celsius) == ESP_OK) {
-                    printf("CPU temperature: %.1f °C\n", celsius);
+                    /* Tenths, in integers: no floating-point conversions in
+                     * the nano printf.  The remainder is taken from the
+                     * absolute value so a sub-zero reading does not print
+                     * as "-3.-5". */
+                    int tenths = (int)(celsius * 10.0f);
+                    printf("CPU temperature: %d.%d °C\n",
+                           tenths / 10, tenths < 0 ? -(tenths % 10) : tenths % 10);
                 }
                 temperature_sensor_disable(tsens);
                 temperature_sensor_uninstall(tsens);
@@ -1670,7 +1676,8 @@ static int show(int argc, char **argv)
 
         int8_t tx_power = 0;
         if (esp_wifi_get_max_tx_power(&tx_power) == ESP_OK) {
-            printf("TX Power: %.1f dBm\n", tx_power * 0.25);
+            printf("TX Power: %d.%02d dBm\n",
+                   TX_DBM_WHOLE(tx_power), TX_DBM_CENTS(tx_power));
         }
         printf("Country Code: %s\n", wifi_country_code);
 
@@ -2068,9 +2075,11 @@ static int pcap(int argc, char **argv)
 
         size_t used, total;
         pcap_get_buffer_usage(&used, &total);
-        printf("Buffer:   %u / %u bytes (%.1f%%)\n",
-               (unsigned)used, (unsigned)total,
-               total > 0 ? (100.0f * used / total) : 0.0f);
+        /* Tenths of a percent, in integers. */
+        unsigned permille = total > 0
+                          ? (unsigned)((uint64_t)used * 1000 / total) : 0;
+        printf("Buffer:   %u / %u bytes (%u.%u%%)\n",
+               (unsigned)used, (unsigned)total, permille / 10, permille % 10);
 
         printf("Captured: %lu packets\n", (unsigned long)pcap_get_captured_count());
         printf("Dropped:  %lu packets\n", (unsigned long)pcap_get_dropped_count());
@@ -2444,7 +2453,9 @@ static int set_tx_power_cmd(int argc, char **argv)
         printf("  dBm: 2-20 (0 = max/default)\n");
         printf("  Actual steps: 2, 5, 7, 8, 11, 13, 14, 15, 16, 18, 20\n");
         if (ret == ESP_OK) {
-            printf("\nCurrent TX power: %.1f dBm (raw: %d)\n", current_power * 0.25, current_power);
+            printf("\nCurrent TX power: %d.%02d dBm (raw: %d)\n",
+                   TX_DBM_WHOLE(current_power), TX_DBM_CENTS(current_power),
+                   current_power);
         }
         int saved = 0;
         get_config_param_int("tx_power", &saved);
@@ -2477,7 +2488,9 @@ static int set_tx_power_cmd(int argc, char **argv)
         ret = esp_wifi_set_max_tx_power(power_qdbm);
         if (ret == ESP_OK) {
             esp_wifi_get_max_tx_power(&current_power);
-            printf("TX power set to %.1f dBm (applied immediately, saved for reboot).\n", current_power * 0.25);
+            printf("TX power set to %d.%02d dBm (applied immediately, saved "
+                   "for reboot).\n",
+                   TX_DBM_WHOLE(current_power), TX_DBM_CENTS(current_power));
         } else {
             printf("Saved for next reboot. Could not apply now: %s\n", esp_err_to_name(ret));
         }

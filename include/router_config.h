@@ -28,6 +28,16 @@ extern "C" {
 #endif
 
 // Byte counting variables for STA interface
+/* Wi-Fi transmit power is reported in quarter-dBm.  Split it into whole units
+ * and hundredths for printing rather than dividing by 4.0: the quarter steps
+ * land exactly on .00/.25/.50/.75, so this is both exact — "%.1f" rounded 0.25
+ * to one decimal — and free of floating point, which the nano printf this
+ * build links does not implement.
+ *
+ * Use as: printf("%d.%02d dBm", TX_DBM_WHOLE(q), TX_DBM_CENTS(q)) */
+#define TX_DBM_WHOLE(qdbm) ((qdbm) / 4)
+#define TX_DBM_CENTS(qdbm) (((qdbm) % 4) * 25)
+
 extern uint64_t sta_bytes_sent;
 extern uint64_t sta_bytes_received;
 

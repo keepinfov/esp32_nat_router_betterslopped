@@ -256,7 +256,11 @@ static int deep_sleep(int argc, char **argv)
     }
     if (deep_sleep_args.wakeup_time->count) {
         uint64_t timeout = 1000ULL * deep_sleep_args.wakeup_time->ival[0];
-        ESP_LOGI(TAG, "Enabling timer wakeup, timeout=%lluus", timeout);
+        /* Printed as the milliseconds the user typed rather than as the
+         * microseconds passed to the API: the nano printf has no 64-bit
+         * conversions, and %llu would print nothing. */
+        ESP_LOGI(TAG, "Enabling timer wakeup, timeout=%dms",
+                 deep_sleep_args.wakeup_time->ival[0]);
         ESP_ERROR_CHECK( esp_sleep_enable_timer_wakeup(timeout) );
     }
     if (deep_sleep_args.wakeup_gpio_num->count) {
@@ -328,7 +332,8 @@ static int light_sleep(int argc, char **argv)
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     if (light_sleep_args.wakeup_time->count) {
         uint64_t timeout = 1000ULL * light_sleep_args.wakeup_time->ival[0];
-        ESP_LOGI(TAG, "Enabling timer wakeup, timeout=%lluus", timeout);
+        ESP_LOGI(TAG, "Enabling timer wakeup, timeout=%dms",
+                 light_sleep_args.wakeup_time->ival[0]);
         ESP_ERROR_CHECK( esp_sleep_enable_timer_wakeup(timeout) );
     }
     int io_count = light_sleep_args.wakeup_gpio_num->count;

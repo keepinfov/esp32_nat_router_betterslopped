@@ -9,3 +9,7 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # Disable IEEE 802.15.4 (Zigbee/Thread) — not used, but enabled by default on C6
 CONFIG_IEEE802154_ENABLED=n
+
+# The C6 ROM has the full printf/scanf, not the nano build, so asking for nano
+# links a second implementation instead of reusing the one already there.
+CONFIG_LIBC_NEWLIB_NANO_FORMAT=n

@@ -1487,7 +1487,8 @@ void app_main(void)
         if (ret == ESP_OK) {
             int8_t actual = 0;
             esp_wifi_get_max_tx_power(&actual);
-            ESP_LOGI(TAG, "TX power set to %.1f dBm", actual * 0.25);
+            ESP_LOGI(TAG, "TX power set to %d.%02d dBm",
+                     TX_DBM_WHOLE(actual), TX_DBM_CENTS(actual));
         } else {
             ESP_LOGW(TAG, "Failed to set TX power: %s", esp_err_to_name(ret));
         }

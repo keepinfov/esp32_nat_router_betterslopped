@@ -326,9 +326,19 @@ static void render_status(int page)
     snprintf(line, sizeof(line), "Clients: %d", connect_count);
     fb_draw_string(3, line);
 
-    snprintf(line, sizeof(line), "%.1f/%.1f MB",
-             sta_bytes_sent / (1024.0 * 1024.0),
-             sta_bytes_received / (1024.0 * 1024.0));
+    /* Tenths of a megabyte worked out in integers, and narrowed to unsigned
+     * before printing: this build links newlib's nano printf, which has
+     * neither floating-point nor 64-bit conversions. Wrapping past 4 GB on a
+     * status display costs nothing worth a wider format. */
+    unsigned tx_tenths = (unsigned)((sta_bytes_sent * 10ULL) >> 20);
+    unsigned rx_tenths = (unsigned)((sta_bytes_received * 10ULL) >> 20);
+    /* Saturate at 9999.9 MB. The display is 21 columns wide, so a larger
+     * number could not be read anyway — and the bound is what lets the
+     * compiler prove the line fits, which -Wformat-truncation insists on. */
+    if (tx_tenths > 99999u) tx_tenths = 99999u;
+    if (rx_tenths > 99999u) rx_tenths = 99999u;
+    snprintf(line, sizeof(line), "%u.%u/%u.%u MB",
+             tx_tenths / 10, tx_tenths % 10, rx_tenths / 10, rx_tenths % 10);
     fb_draw_string(4, line);
 #endif
 }
