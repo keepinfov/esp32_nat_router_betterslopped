@@ -4,14 +4,23 @@ name: Build
 # flash budget. ota_0 is 1536 KiB and the C3/C5 images had quietly crept past
 # 99% of it, which is only visible if something checks every build.
 #
-# Currently manual-only. Hosted runners were queueing jobs for ten minutes at a
-# time, one job died inside GitHub's own action-download service, and the first
-# job on a self-hosted runner failed after exactly ten minutes without
-# uploading any logs at all — leaving nothing to debug. Until that settles,
-# builds are verified locally with ./build_all_targets.sh, which runs the same
-# size check.
+# Currently manual-only, for two separate reasons.
 #
-# To turn automatic builds back on, restore the two trigger lines below.
+# Hosted runners queued jobs for ten minutes at a time and one job died inside
+# GitHub's own action-download service ("Failed to resolve action download
+# info").
+#
+# The self-hosted runner kills every job at exactly 600 seconds: four
+# consecutive jobs — esp32, esp32c3, esp32c5, esp32s3 — each ran 10:00 to the
+# second and then failed, uploading no logs at all, which is what happens when
+# the runner process is terminated rather than a step returning non-zero.
+# That is a cap in the runner's environment, not anything this workflow does;
+# cloning ESP-IDF and installing a toolchain does not fit in ten minutes, so no
+# build can ever pass until it is raised.
+#
+# Until then builds are verified locally with ./build_all_targets.sh, which
+# runs the same size check. To turn automatic builds back on, raise that cap
+# and restore the two trigger lines below.
 
 on:
   # push:
