@@ -59,6 +59,17 @@ jobs:
       - name: Trust the checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      # A self-hosted runner that dies mid-job uploads no logs, so record the
+      # things that would explain it before doing any work.
+      - name: Runner health
+        shell: bash
+        run: |
+          echo "disk:";  df -h "$HOME" "$GITHUB_WORKSPACE" || true
+          echo "memory:"; free -h 2>/dev/null || true
+          echo "python: $(python3 --version 2>&1)"
+          echo "git:    $(git --version)"
+          echo "cmake:  $(cmake --version 2>&1 | head -1)"
+
       # Kept outside the workspace so it survives between runs. Honours an
       # IDF_PATH the runner already provides; otherwise clones once and only
       # fetches again when the release branch has moved.
@@ -83,7 +94,12 @@ jobs:
             fi
             echo "IDF_PATH=$IDF_PATH" >> "$GITHUB_ENV"
           fi
-          "$IDF_PATH/install.sh" esp32,esp32s3,esp32c3,esp32c5,esp32c6
+          # Only the chip this job builds. Installing all five at once pulls
+          # several gigabytes of toolchain in one go, which is a lot to ask of
+          # a small runner; jobs run serially and share $IDF_TOOLS_PATH, so the
+          # set fills in over the matrix anyway and later jobs find theirs
+          # already present.
+          "$IDF_PATH/install.sh" "${{ matrix.chip }}"
 
       - name: Build ${{ matrix.name }}
         shell: bash
