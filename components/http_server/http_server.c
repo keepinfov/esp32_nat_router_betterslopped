@@ -1778,396 +1778,394 @@ static esp_err_t config_get_handler(httpd_req_t *req)
     bool restarting = false;
 
     if (form != NULL) {
-        {
-            char reset_param[16];
-            if (httpd_query_key_value(form, "reset", reset_param, sizeof(reset_param)) == ESP_OK) {
-                esp_timer_start_once(restart_timer, 500000);
-                restarting = true;
-            }
+        char reset_param[16];
+        if (httpd_query_key_value(form, "reset", reset_param, sizeof(reset_param)) == ESP_OK) {
+            esp_timer_start_once(restart_timer, 500000);
+            restarting = true;
+        }
 
-            /* Handle Web UI bind interface settings */
-            char param1[64];
-            if (httpd_query_key_value(form, "web_bind_save", param1, sizeof(param1)) == ESP_OK) {
-                uint8_t bind = 0;
-                if (httpd_query_key_value(form, "web_bind_ap",  param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
-                if (httpd_query_key_value(form, "web_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
-                if (httpd_query_key_value(form, "web_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
-                if (bind == 0) bind = RC_BIND_AP;
-                web_ui_set_bind(bind);
-                ESP_LOGI(TAG, "Web UI bind interfaces updated via web");
-                free(form);
-                httpd_resp_set_status(req, "303 See Other");
-                httpd_resp_set_hdr(req, "Location", "/config");
-                httpd_resp_send(req, NULL, 0);
-                return ESP_OK;
-            }
+        /* Handle Web UI bind interface settings */
+        char param1[64];
+        if (httpd_query_key_value(form, "web_bind_save", param1, sizeof(param1)) == ESP_OK) {
+            uint8_t bind = 0;
+            if (httpd_query_key_value(form, "web_bind_ap",  param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
+            if (httpd_query_key_value(form, "web_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
+            if (httpd_query_key_value(form, "web_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
+            if (bind == 0) bind = RC_BIND_AP;
+            web_ui_set_bind(bind);
+            ESP_LOGI(TAG, "Web UI bind interfaces updated via web");
+            free(form);
+            httpd_resp_set_status(req, "303 See Other");
+            httpd_resp_set_hdr(req, "Location", "/config");
+            httpd_resp_send(req, NULL, 0);
+            return ESP_OK;
+        }
 
-            /* Handle disable interface button */
-            if (strstr(form, "disable_interface=") != NULL) {
-                ESP_LOGI(TAG, "Disabling web interface");
-                if (set_config_param_str("web_disabled", "1") == ESP_OK) {
-                    ESP_LOGI(TAG, "Web interface disabled. Use 'enable' command via serial to re-enable.");
+        /* Handle disable interface button */
+        if (strstr(form, "disable_interface=") != NULL) {
+            ESP_LOGI(TAG, "Disabling web interface");
+            if (set_config_param_str("web_disabled", "1") == ESP_OK) {
+                ESP_LOGI(TAG, "Web interface disabled. Use 'enable' command via serial to re-enable.");
+            }
+            esp_timer_start_once(restart_timer, 500000);
+            restarting = true;
+        }
+
+        char param2[64];
+        char param3[64];
+        char param4[64];
+        char param5[64];
+
+        /* Handle AP settings with optional MAC and IP */
+        if (httpd_query_key_value(form, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
+            ESP_LOGI(TAG, "Found URL query parameter => ap_ssid=%s", param1);
+            preprocess_string(param1);
+            if (httpd_query_key_value(form, "ap_password", param2, sizeof(param2)) == ESP_OK) {
+                preprocess_string(param2);
+
+                // "Open network" checkbox overrides password to empty
+                {
+                    char open_val[4] = "";
+                    if (httpd_query_key_value(form, "ap_open", open_val, sizeof(open_val)) == ESP_OK) {
+                        param2[0] = '\0';
+                    } else if (strlen(param2) == 0) {
+                        // Keep existing password if field was left empty
+                        strlcpy(param2, ap_passwd, sizeof(param2));
+                    }
                 }
-                esp_timer_start_once(restart_timer, 500000);
-                restarting = true;
-            }
 
-            char param2[64];
-            char param3[64];
-            char param4[64];
-            char param5[64];
+                // Set SSID and password
+                int argc = 3;
+                char* argv[3];
+                argv[0] = "set_ap";
+                argv[1] = param1;
+                argv[2] = param2;
+                set_ap(argc, argv);
 
-            /* Handle AP settings with optional MAC and IP */
-            if (httpd_query_key_value(form, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
-                ESP_LOGI(TAG, "Found URL query parameter => ap_ssid=%s", param1);
-                preprocess_string(param1);
-                if (httpd_query_key_value(form, "ap_password", param2, sizeof(param2)) == ESP_OK) {
-                    preprocess_string(param2);
+                // Check for optional AP IP address
+                if (httpd_query_key_value(form, "ap_ip_addr", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
+                    ESP_LOGI(TAG, "Found URL query parameter => ap_ip_addr=%s", param3);
+                    preprocess_string(param3);
+                    char* ip_argv[2];
+                    ip_argv[0] = "set_ap_ip";
+                    ip_argv[1] = param3;
+                    set_ap_ip(2, ip_argv);
+                }
 
-                    // "Open network" checkbox overrides password to empty
-                    {
-                        char open_val[4] = "";
-                        if (httpd_query_key_value(form, "ap_open", open_val, sizeof(open_val)) == ESP_OK) {
-                            param2[0] = '\0';
-                        } else if (strlen(param2) == 0) {
-                            // Keep existing password if field was left empty
-                            strlcpy(param2, ap_passwd, sizeof(param2));
+                // Check for optional hostname (mDNS / DHCP name).
+                // set_hostname validates (RFC 952) and updates the global.
+                if (httpd_query_key_value(form, "ap_hostname", param4, sizeof(param4)) == ESP_OK) {
+                    ESP_LOGI(TAG, "Found URL query parameter => ap_hostname=%s", param4);
+                    char* host_argv[2];
+                    host_argv[0] = "set_hostname";
+                    host_argv[1] = param4;
+                    set_hostname(2, host_argv);
+                }
+
+                // Check for optional AP DNS server
+                {
+                    char dns_param[64];
+                    if (httpd_query_key_value(form, "ap_dns", dns_param, sizeof(dns_param)) == ESP_OK) {
+                        preprocess_string(dns_param);
+                        ESP_LOGI(TAG, "Found URL query parameter => ap_dns=%s", dns_param);
+                        set_config_param_str("ap_dns", dns_param);
+                        free(ap_dns);
+                        ap_dns = strdup(dns_param);
+                    }
+                }
+
+                // Check for optional AP MAC address
+                if (httpd_query_key_value(form, "ap_mac", param4, sizeof(param4)) == ESP_OK && strlen(param4) > 0) {
+                    ESP_LOGI(TAG, "Found URL query parameter => ap_mac=%s", param4);
+                    preprocess_string(param4);
+                    // Parse MAC address string (format: AA:BB:CC:DD:EE:FF)
+                    unsigned int mac[6];
+                    if (sscanf(param4, "%02x:%02x:%02x:%02x:%02x:%02x",
+                               &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
+                        char mac_str[6][4];
+                        for (int i = 0; i < 6; i++) {
+                            sprintf(mac_str[i], "%d", mac[i]);
                         }
-                    }
-
-                    // Set SSID and password
-                    int argc = 3;
-                    char* argv[3];
-                    argv[0] = "set_ap";
-                    argv[1] = param1;
-                    argv[2] = param2;
-                    set_ap(argc, argv);
-
-                    // Check for optional AP IP address
-                    if (httpd_query_key_value(form, "ap_ip_addr", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
-                        ESP_LOGI(TAG, "Found URL query parameter => ap_ip_addr=%s", param3);
-                        preprocess_string(param3);
-                        char* ip_argv[2];
-                        ip_argv[0] = "set_ap_ip";
-                        ip_argv[1] = param3;
-                        set_ap_ip(2, ip_argv);
-                    }
-
-                    // Check for optional hostname (mDNS / DHCP name).
-                    // set_hostname validates (RFC 952) and updates the global.
-                    if (httpd_query_key_value(form, "ap_hostname", param4, sizeof(param4)) == ESP_OK) {
-                        ESP_LOGI(TAG, "Found URL query parameter => ap_hostname=%s", param4);
-                        char* host_argv[2];
-                        host_argv[0] = "set_hostname";
-                        host_argv[1] = param4;
-                        set_hostname(2, host_argv);
-                    }
-
-                    // Check for optional AP DNS server
-                    {
-                        char dns_param[64];
-                        if (httpd_query_key_value(form, "ap_dns", dns_param, sizeof(dns_param)) == ESP_OK) {
-                            preprocess_string(dns_param);
-                            ESP_LOGI(TAG, "Found URL query parameter => ap_dns=%s", dns_param);
-                            set_config_param_str("ap_dns", dns_param);
-                            free(ap_dns);
-                            ap_dns = strdup(dns_param);
+                        char* mac_argv[7];
+                        mac_argv[0] = "set_ap_mac";
+                        for (int i = 0; i < 6; i++) {
+                            mac_argv[i+1] = mac_str[i];
                         }
+                        set_ap_mac(7, mac_argv);
                     }
+                }
 
-                    // Check for optional AP MAC address
-                    if (httpd_query_key_value(form, "ap_mac", param4, sizeof(param4)) == ESP_OK && strlen(param4) > 0) {
-                        ESP_LOGI(TAG, "Found URL query parameter => ap_mac=%s", param4);
-                        preprocess_string(param4);
-                        // Parse MAC address string (format: AA:BB:CC:DD:EE:FF)
-                        unsigned int mac[6];
-                        if (sscanf(param4, "%02x:%02x:%02x:%02x:%02x:%02x",
-                                   &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
-                            char mac_str[6][4];
-                            for (int i = 0; i < 6; i++) {
-                                sprintf(mac_str[i], "%d", mac[i]);
-                            }
-                            char* mac_argv[7];
-                            mac_argv[0] = "set_ap_mac";
-                            for (int i = 0; i < 6; i++) {
-                                mac_argv[i+1] = mac_str[i];
-                            }
-                            set_ap_mac(7, mac_argv);
-                        }
-                    }
+                // Handle AP enabled/disabled setting
+                // Checkbox sends value only when checked, so absence means "disabled"
+                {
+                    bool ap_en = (httpd_query_key_value(form, "ap_enabled", param5, sizeof(param5)) == ESP_OK);
+                    set_config_param_int("ap_disabled", ap_en ? 0 : 1);
+                    ap_disabled = !ap_en;
+                    ESP_LOGI(TAG, "AP interface %s", ap_en ? "enabled" : "disabled");
+                }
 
-                    // Handle AP enabled/disabled setting
-                    // Checkbox sends value only when checked, so absence means "disabled"
-                    {
-                        bool ap_en = (httpd_query_key_value(form, "ap_enabled", param5, sizeof(param5)) == ESP_OK);
-                        set_config_param_int("ap_disabled", ap_en ? 0 : 1);
-                        ap_disabled = !ap_en;
-                        ESP_LOGI(TAG, "AP interface %s", ap_en ? "enabled" : "disabled");
-                    }
+                // Handle AP NAT setting (checkbox: present = on, absent = off)
+                {
+                    int nat_val = (httpd_query_key_value(form, "ap_nat", param5, sizeof(param5)) == ESP_OK) ? 1 : 0;
+                    set_config_param_int("ap_nat", nat_val);
+                    ap_nat_enabled = (uint8_t)nat_val;
+                    ESP_LOGI(TAG, "AP NAT %s", nat_val ? "enabled" : "disabled");
+                }
 
-                    // Handle AP NAT setting (checkbox: present = on, absent = off)
-                    {
-                        int nat_val = (httpd_query_key_value(form, "ap_nat", param5, sizeof(param5)) == ESP_OK) ? 1 : 0;
-                        set_config_param_int("ap_nat", nat_val);
-                        ap_nat_enabled = (uint8_t)nat_val;
-                        ESP_LOGI(TAG, "AP NAT %s", nat_val ? "enabled" : "disabled");
+                // Handle AP hidden SSID setting
+                // Checkbox sends value only when checked, so absence means "off"
+                {
+                    int hidden_val = 0;
+                    if (httpd_query_key_value(form, "ap_hidden", param5, sizeof(param5)) == ESP_OK) {
+                        hidden_val = 1;
+                        ESP_LOGI(TAG, "Found URL query parameter => ap_hidden=%s", param5);
                     }
+                    set_config_param_int("ap_hidden", hidden_val);
+                    ap_ssid_hidden = (uint8_t)hidden_val;
+                    ESP_LOGI(TAG, "AP hidden SSID set to: %d", hidden_val);
+                }
 
-                    // Handle AP hidden SSID setting
-                    // Checkbox sends value only when checked, so absence means "off"
-                    {
-                        int hidden_val = 0;
-                        if (httpd_query_key_value(form, "ap_hidden", param5, sizeof(param5)) == ESP_OK) {
-                            hidden_val = 1;
-                            ESP_LOGI(TAG, "Found URL query parameter => ap_hidden=%s", param5);
-                        }
-                        set_config_param_int("ap_hidden", hidden_val);
-                        ap_ssid_hidden = (uint8_t)hidden_val;
-                        ESP_LOGI(TAG, "AP hidden SSID set to: %d", hidden_val);
+                // Handle AP auth mode setting
+                if (httpd_query_key_value(form, "ap_auth", param5, sizeof(param5)) == ESP_OK) {
+                    int auth_val = atoi(param5);
+                    if (auth_val >= 0 && auth_val <= 2) {
+                        set_config_param_int("ap_authmode", auth_val);
+                        ap_authmode = (uint8_t)auth_val;
+                        ESP_LOGI(TAG, "AP auth mode set to: %d", auth_val);
                     }
-
-                    // Handle AP auth mode setting
-                    if (httpd_query_key_value(form, "ap_auth", param5, sizeof(param5)) == ESP_OK) {
-                        int auth_val = atoi(param5);
-                        if (auth_val >= 0 && auth_val <= 2) {
-                            set_config_param_int("ap_authmode", auth_val);
-                            ap_authmode = (uint8_t)auth_val;
-                            ESP_LOGI(TAG, "AP auth mode set to: %d", auth_val);
-                        }
-                    }
+                }
 
 #if CONFIG_ETH_UPLINK
-                    // Handle AP channel setting (ETH_UPLINK only)
-                    if (httpd_query_key_value(form, "ap_channel", param5, sizeof(param5)) == ESP_OK) {
-                        int channel_val = atoi(param5);
-                        if (channel_val >= 0 && channel_val <= 13) {
-                            set_config_param_int("ap_channel", channel_val);
-                            ap_channel = (uint8_t)channel_val;
-                            ESP_LOGI(TAG, "AP channel set to: %d", channel_val);
-                        }
+                // Handle AP channel setting (ETH_UPLINK only)
+                if (httpd_query_key_value(form, "ap_channel", param5, sizeof(param5)) == ESP_OK) {
+                    int channel_val = atoi(param5);
+                    if (channel_val >= 0 && channel_val <= 13) {
+                        set_config_param_int("ap_channel", channel_val);
+                        ap_channel = (uint8_t)channel_val;
+                        ESP_LOGI(TAG, "AP channel set to: %d", channel_val);
                     }
+                }
 #endif
 
-                    esp_timer_start_once(restart_timer, 500000);
-                    restarting = true;
-                }
+                esp_timer_start_once(restart_timer, 500000);
+                restarting = true;
             }
+        }
 
 #if !CONFIG_ETH_UPLINK
-            /* Handle STA settings with optional MAC */
-            if (httpd_query_key_value(form, "ssid", param1, sizeof(param1)) == ESP_OK) {
-                ESP_LOGI(TAG, "Found URL query parameter => ssid=%s", param1);
-                preprocess_string(param1);
-                if (httpd_query_key_value(form, "password", param2, sizeof(param2)) == ESP_OK) {
-                    preprocess_string(param2);
+        /* Handle STA settings with optional MAC */
+        if (httpd_query_key_value(form, "ssid", param1, sizeof(param1)) == ESP_OK) {
+            ESP_LOGI(TAG, "Found URL query parameter => ssid=%s", param1);
+            preprocess_string(param1);
+            if (httpd_query_key_value(form, "password", param2, sizeof(param2)) == ESP_OK) {
+                preprocess_string(param2);
 
-                    // Keep existing password if field was left empty
-                    if (strlen(param2) == 0) {
-                        strlcpy(param2, passwd, sizeof(param2));
-                    }
-                    if (httpd_query_key_value(form, "ent_username", param3, sizeof(param3)) == ESP_OK) {
-                        ESP_LOGI(TAG, "Found URL query parameter => ent_username=%s", param3);
-                        preprocess_string(param3);
-                        if (httpd_query_key_value(form, "ent_identity", param4, sizeof(param4)) == ESP_OK) {
-                            ESP_LOGI(TAG, "Found URL query parameter => ent_identity=%s", param4);
-                            preprocess_string(param4);
+                // Keep existing password if field was left empty
+                if (strlen(param2) == 0) {
+                    strlcpy(param2, passwd, sizeof(param2));
+                }
+                if (httpd_query_key_value(form, "ent_username", param3, sizeof(param3)) == ESP_OK) {
+                    ESP_LOGI(TAG, "Found URL query parameter => ent_username=%s", param3);
+                    preprocess_string(param3);
+                    if (httpd_query_key_value(form, "ent_identity", param4, sizeof(param4)) == ESP_OK) {
+                        ESP_LOGI(TAG, "Found URL query parameter => ent_identity=%s", param4);
+                        preprocess_string(param4);
 
-                            int argc = 0;
-                            char* argv[7];
-                            argv[argc++] = "set_sta";
-                            //SSID
-                            argv[argc++] = param1;
-                            //Password
-                            argv[argc++] = param2;
-                            //Username
-                            if(strlen(param3)) {
-                                argv[argc++] = "-u";
-                                argv[argc++] = param3;
+                        int argc = 0;
+                        char* argv[7];
+                        argv[argc++] = "set_sta";
+                        //SSID
+                        argv[argc++] = param1;
+                        //Password
+                        argv[argc++] = param2;
+                        //Username
+                        if(strlen(param3)) {
+                            argv[argc++] = "-u";
+                            argv[argc++] = param3;
+                        }
+                        //Identity
+                        if(strlen(param4)) {
+                            argv[argc++] = "-a";
+                            argv[argc++] = param4;
+                        }
+
+                        set_sta(argc, argv);
+
+                        // Save WPA2-Enterprise settings to NVS
+                        {
+                            char phase2_param[4] = "";
+                            int phase2_val = 0;
+                            if (httpd_query_key_value(form, "ttls_phase2", phase2_param, sizeof(phase2_param)) == ESP_OK) {
+                                phase2_val = atoi(phase2_param);
                             }
-                            //Identity
-                            if(strlen(param4)) {
-                                argv[argc++] = "-a";
-                                argv[argc++] = param4;
+                            set_config_param_int("ttls_phase2", phase2_val);
+                            ttls_phase2 = phase2_val;
+
+                            // Checkboxes: present = 1, absent = 0
+                            char cb_param[4] = "";
+                            int cb_val = 0;
+                            if (httpd_query_key_value(form, "cert_bundle", cb_param, sizeof(cb_param)) == ESP_OK) {
+                                cb_val = 1;
                             }
+                            set_config_param_int("cert_bundle", cb_val);
+                            use_cert_bundle = cb_val;
 
-                            set_sta(argc, argv);
-
-                            // Save WPA2-Enterprise settings to NVS
-                            {
-                                char phase2_param[4] = "";
-                                int phase2_val = 0;
-                                if (httpd_query_key_value(form, "ttls_phase2", phase2_param, sizeof(phase2_param)) == ESP_OK) {
-                                    phase2_val = atoi(phase2_param);
-                                }
-                                set_config_param_int("ttls_phase2", phase2_val);
-                                ttls_phase2 = phase2_val;
-
-                                // Checkboxes: present = 1, absent = 0
-                                char cb_param[4] = "";
-                                int cb_val = 0;
-                                if (httpd_query_key_value(form, "cert_bundle", cb_param, sizeof(cb_param)) == ESP_OK) {
-                                    cb_val = 1;
-                                }
-                                set_config_param_int("cert_bundle", cb_val);
-                                use_cert_bundle = cb_val;
-
-                                int tc_val = 0;
-                                if (httpd_query_key_value(form, "no_time_chk", cb_param, sizeof(cb_param)) == ESP_OK) {
-                                    tc_val = 1;
-                                }
-                                set_config_param_int("no_time_chk", tc_val);
-                                disable_time_check = tc_val;
+                            int tc_val = 0;
+                            if (httpd_query_key_value(form, "no_time_chk", cb_param, sizeof(cb_param)) == ESP_OK) {
+                                tc_val = 1;
                             }
+                            set_config_param_int("no_time_chk", tc_val);
+                            disable_time_check = tc_val;
+                        }
 
 #if WIFI_HAS_5GHZ
-                            // Save STA band preference
-                            {
-                                char band_param[4] = "";
-                                int band_val = STA_BAND_AUTO;
-                                if (httpd_query_key_value(form, "sta_band", band_param, sizeof(band_param)) == ESP_OK) {
-                                    band_val = atoi(band_param);
-                                    if (band_val < STA_BAND_AUTO || band_val > STA_BAND_5G)
-                                        band_val = STA_BAND_AUTO;
-                                }
-                                set_config_param_int("sta_band", band_val);
-                                sta_band = (uint8_t)band_val;
+                        // Save STA band preference
+                        {
+                            char band_param[4] = "";
+                            int band_val = STA_BAND_AUTO;
+                            if (httpd_query_key_value(form, "sta_band", band_param, sizeof(band_param)) == ESP_OK) {
+                                band_val = atoi(band_param);
+                                if (band_val < STA_BAND_AUTO || band_val > STA_BAND_5G)
+                                    band_val = STA_BAND_AUTO;
                             }
-#endif
-
-                            // Check for optional STA MAC address
-                            if (httpd_query_key_value(form, "sta_mac", param5, sizeof(param5)) == ESP_OK && strlen(param5) > 0) {
-                                ESP_LOGI(TAG, "Found URL query parameter => sta_mac=%s", param5);
-                                preprocess_string(param5);
-                                // Parse MAC address string (format: AA:BB:CC:DD:EE:FF)
-                                unsigned int mac[6];
-                                if (sscanf(param5, "%02x:%02x:%02x:%02x:%02x:%02x",
-                                           &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
-                                    char mac_str[6][4];
-                                    for (int i = 0; i < 6; i++) {
-                                        sprintf(mac_str[i], "%d", mac[i]);
-                                    }
-                                    char* mac_argv[7];
-                                    mac_argv[0] = "set_sta_mac";
-                                    for (int i = 0; i < 6; i++) {
-                                        mac_argv[i+1] = mac_str[i];
-                                    }
-                                    set_sta_mac(7, mac_argv);
-                                }
-                            }
-
-                            esp_timer_start_once(restart_timer, 500000);
-                            restarting = true;
+                            set_config_param_int("sta_band", band_val);
+                            sta_band = (uint8_t)band_val;
                         }
-                    }
-                }
-            }
 #endif
 
-            /* Handle static IP settings */
-            if (httpd_query_key_value(form, "staticip", param1, sizeof(param1)) == ESP_OK) {
-                ESP_LOGI(TAG, "Found URL query parameter => staticip=%s", param1);
-                preprocess_string(param1);
-                if (httpd_query_key_value(form, "subnetmask", param2, sizeof(param2)) == ESP_OK) {
-                    ESP_LOGI(TAG, "Found URL query parameter => subnetmask=%s", param2);
-                    preprocess_string(param2);
-                    if (httpd_query_key_value(form, "gateway", param3, sizeof(param3)) == ESP_OK) {
-                        ESP_LOGI(TAG, "Found URL query parameter => gateway=%s", param3);
-                        preprocess_string(param3);
-                        int argc = 4;
-                        char* argv[4];
-                        argv[0] = "set_sta_static";
-                        argv[1] = param1;
-                        argv[2] = param2;
-                        argv[3] = param3;
-                        set_sta_static(argc, argv);
+                        // Check for optional STA MAC address
+                        if (httpd_query_key_value(form, "sta_mac", param5, sizeof(param5)) == ESP_OK && strlen(param5) > 0) {
+                            ESP_LOGI(TAG, "Found URL query parameter => sta_mac=%s", param5);
+                            preprocess_string(param5);
+                            // Parse MAC address string (format: AA:BB:CC:DD:EE:FF)
+                            unsigned int mac[6];
+                            if (sscanf(param5, "%02x:%02x:%02x:%02x:%02x:%02x",
+                                       &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
+                                char mac_str[6][4];
+                                for (int i = 0; i < 6; i++) {
+                                    sprintf(mac_str[i], "%d", mac[i]);
+                                }
+                                char* mac_argv[7];
+                                mac_argv[0] = "set_sta_mac";
+                                for (int i = 0; i < 6; i++) {
+                                    mac_argv[i+1] = mac_str[i];
+                                }
+                                set_sta_mac(7, mac_argv);
+                            }
+                        }
+
                         esp_timer_start_once(restart_timer, 500000);
                         restarting = true;
                     }
                 }
             }
+        }
+#endif
 
-            /* Handle Remote Console kick.
-             * Tested before the settings save below: the Disconnect button
-             * lives inside the settings form, so a click on it carries
-             * rc_save=1 as well and the save would answer first. */
-            if (httpd_query_key_value(form, "rc_kick", param1, sizeof(param1)) == ESP_OK) {
-                remote_console_kick();
-                ESP_LOGI(TAG, "Remote console session kicked via web");
-                free(form);
-                httpd_resp_set_status(req, "303 See Other");
-                httpd_resp_set_hdr(req, "Location", "/config");
-                httpd_resp_send(req, NULL, 0);
-                return ESP_OK;
+        /* Handle static IP settings */
+        if (httpd_query_key_value(form, "staticip", param1, sizeof(param1)) == ESP_OK) {
+            ESP_LOGI(TAG, "Found URL query parameter => staticip=%s", param1);
+            preprocess_string(param1);
+            if (httpd_query_key_value(form, "subnetmask", param2, sizeof(param2)) == ESP_OK) {
+                ESP_LOGI(TAG, "Found URL query parameter => subnetmask=%s", param2);
+                preprocess_string(param2);
+                if (httpd_query_key_value(form, "gateway", param3, sizeof(param3)) == ESP_OK) {
+                    ESP_LOGI(TAG, "Found URL query parameter => gateway=%s", param3);
+                    preprocess_string(param3);
+                    int argc = 4;
+                    char* argv[4];
+                    argv[0] = "set_sta_static";
+                    argv[1] = param1;
+                    argv[2] = param2;
+                    argv[3] = param3;
+                    set_sta_static(argc, argv);
+                    esp_timer_start_once(restart_timer, 500000);
+                    restarting = true;
+                }
             }
+        }
 
-            /* Handle Remote Console settings (single form) */
-            if (httpd_query_key_value(form, "rc_save", param1, sizeof(param1)) == ESP_OK) {
-                /* Enable/disable */
-                if (httpd_query_key_value(form, "rc_enabled", param1, sizeof(param1)) == ESP_OK) {
-                    preprocess_string(param1);
-                    if (strcmp(param1, "1") == 0) {
-                        remote_console_enable();
-                    } else {
-                        remote_console_disable();
-                    }
-                }
-                /* Port */
-                if (httpd_query_key_value(form, "rc_port", param1, sizeof(param1)) == ESP_OK) {
-                    preprocess_string(param1);
-                    int port = atoi(param1);
-                    if (port >= 1 && port <= 65535) {
-                        remote_console_set_port((uint16_t)port);
-                    }
-                }
-                /* Bind interfaces (checkboxes: absent = unchecked) */
-                uint8_t bind = 0;
-                if (httpd_query_key_value(form, "rc_bind_ap", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
-                if (httpd_query_key_value(form, "rc_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
-                if (httpd_query_key_value(form, "rc_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
-                if (bind == 0) bind = RC_BIND_AP;
-                remote_console_set_bind(bind);
-                /* Timeout */
-                if (httpd_query_key_value(form, "rc_timeout", param1, sizeof(param1)) == ESP_OK) {
-                    preprocess_string(param1);
-                    int timeout = atoi(param1);
-                    if (timeout >= 0) {
-                        remote_console_set_timeout((uint32_t)timeout);
-                    }
-                }
-                ESP_LOGI(TAG, "Remote console settings saved via web");
-                free(form);
-                httpd_resp_set_status(req, "303 See Other");
-                httpd_resp_set_hdr(req, "Location", "/config");
-                httpd_resp_send(req, NULL, 0);
-                return ESP_OK;
-            }
+        /* Handle Remote Console kick.
+         * Tested before the settings save below: the Disconnect button
+         * lives inside the settings form, so a click on it carries
+         * rc_save=1 as well and the save would answer first. */
+        if (httpd_query_key_value(form, "rc_kick", param1, sizeof(param1)) == ESP_OK) {
+            remote_console_kick();
+            ESP_LOGI(TAG, "Remote console session kicked via web");
+            free(form);
+            httpd_resp_set_status(req, "303 See Other");
+            httpd_resp_set_hdr(req, "Location", "/config");
+            httpd_resp_send(req, NULL, 0);
+            return ESP_OK;
+        }
 
-            /* Handle PCAP settings (single form) */
-            if (httpd_query_key_value(form, "pcap_save", param1, sizeof(param1)) == ESP_OK) {
-                if (httpd_query_key_value(form, "pcap_mode", param1, sizeof(param1)) == ESP_OK) {
-                    preprocess_string(param1);
-                    if (strcmp(param1, "off") == 0) {
-                        pcap_set_mode(PCAP_MODE_OFF);
-                    } else if (strcmp(param1, "acl") == 0) {
-                        pcap_set_mode(PCAP_MODE_ACL_MONITOR);
-                    } else if (strcmp(param1, "promisc") == 0) {
-                        pcap_set_mode(PCAP_MODE_PROMISCUOUS);
-                    }
+        /* Handle Remote Console settings (single form) */
+        if (httpd_query_key_value(form, "rc_save", param1, sizeof(param1)) == ESP_OK) {
+            /* Enable/disable */
+            if (httpd_query_key_value(form, "rc_enabled", param1, sizeof(param1)) == ESP_OK) {
+                preprocess_string(param1);
+                if (strcmp(param1, "1") == 0) {
+                    remote_console_enable();
+                } else {
+                    remote_console_disable();
                 }
-                if (httpd_query_key_value(form, "pcap_snaplen", param1, sizeof(param1)) == ESP_OK) {
-                    preprocess_string(param1);
-                    int snaplen = atoi(param1);
-                    if (snaplen >= 64 && snaplen <= 1600) {
-                        pcap_set_snaplen((uint16_t)snaplen);
-                    }
-                }
-                ESP_LOGI(TAG, "PCAP settings saved via web");
-                free(form);
-                httpd_resp_set_status(req, "303 See Other");
-                httpd_resp_set_hdr(req, "Location", "/config");
-                httpd_resp_send(req, NULL, 0);
-                return ESP_OK;
             }
+            /* Port */
+            if (httpd_query_key_value(form, "rc_port", param1, sizeof(param1)) == ESP_OK) {
+                preprocess_string(param1);
+                int port = atoi(param1);
+                if (port >= 1 && port <= 65535) {
+                    remote_console_set_port((uint16_t)port);
+                }
+            }
+            /* Bind interfaces (checkboxes: absent = unchecked) */
+            uint8_t bind = 0;
+            if (httpd_query_key_value(form, "rc_bind_ap", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
+            if (httpd_query_key_value(form, "rc_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
+            if (httpd_query_key_value(form, "rc_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
+            if (bind == 0) bind = RC_BIND_AP;
+            remote_console_set_bind(bind);
+            /* Timeout */
+            if (httpd_query_key_value(form, "rc_timeout", param1, sizeof(param1)) == ESP_OK) {
+                preprocess_string(param1);
+                int timeout = atoi(param1);
+                if (timeout >= 0) {
+                    remote_console_set_timeout((uint32_t)timeout);
+                }
+            }
+            ESP_LOGI(TAG, "Remote console settings saved via web");
+            free(form);
+            httpd_resp_set_status(req, "303 See Other");
+            httpd_resp_set_hdr(req, "Location", "/config");
+            httpd_resp_send(req, NULL, 0);
+            return ESP_OK;
+        }
+
+        /* Handle PCAP settings (single form) */
+        if (httpd_query_key_value(form, "pcap_save", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "pcap_mode", param1, sizeof(param1)) == ESP_OK) {
+                preprocess_string(param1);
+                if (strcmp(param1, "off") == 0) {
+                    pcap_set_mode(PCAP_MODE_OFF);
+                } else if (strcmp(param1, "acl") == 0) {
+                    pcap_set_mode(PCAP_MODE_ACL_MONITOR);
+                } else if (strcmp(param1, "promisc") == 0) {
+                    pcap_set_mode(PCAP_MODE_PROMISCUOUS);
+                }
+            }
+            if (httpd_query_key_value(form, "pcap_snaplen", param1, sizeof(param1)) == ESP_OK) {
+                preprocess_string(param1);
+                int snaplen = atoi(param1);
+                if (snaplen >= 64 && snaplen <= 1600) {
+                    pcap_set_snaplen((uint16_t)snaplen);
+                }
+            }
+            ESP_LOGI(TAG, "PCAP settings saved via web");
+            free(form);
+            httpd_resp_set_status(req, "303 See Other");
+            httpd_resp_set_hdr(req, "Location", "/config");
+            httpd_resp_send(req, NULL, 0);
+            return ESP_OK;
         }
         free(form);
     }
@@ -2465,170 +2463,168 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
     read_error_param(req, error_msg, sizeof(error_msg));
 
     if (form != NULL) {
-        {
-            char param1[64];
-            char param2[64];
-            char param3[64];
-            char param4[64];
+        char param1[64];
+        char param2[64];
+        char param3[64];
+        char param4[64];
 
-            /* Check for add DHCP reservation */
-            if (httpd_query_key_value(form, "dhcp_action", param1, sizeof(param1)) == ESP_OK) {
-                bool is_block = (strcmp(param1, "Block") == 0);
-                if (strcmp(param1, "Add+Reservation") == 0 || strcmp(param1, "Add Reservation") == 0 || is_block) {
-                    if (httpd_query_key_value(form, "dhcp_mac", param1, sizeof(param1)) == ESP_OK &&
-                        httpd_query_key_value(form, "dhcp_ip", param2, sizeof(param2)) == ESP_OK) {
+        /* Check for add DHCP reservation */
+        if (httpd_query_key_value(form, "dhcp_action", param1, sizeof(param1)) == ESP_OK) {
+            bool is_block = (strcmp(param1, "Block") == 0);
+            if (strcmp(param1, "Add+Reservation") == 0 || strcmp(param1, "Add Reservation") == 0 || is_block) {
+                if (httpd_query_key_value(form, "dhcp_mac", param1, sizeof(param1)) == ESP_OK &&
+                    httpd_query_key_value(form, "dhcp_ip", param2, sizeof(param2)) == ESP_OK) {
 
-                        preprocess_string(param1);
-                        preprocess_string(param2);
+                    preprocess_string(param1);
+                    preprocess_string(param2);
 
-                        const char *err_msg = NULL;
+                    const char *err_msg = NULL;
 
-                        // Parse MAC address
-                        unsigned int mac[6];
-                        uint8_t mac_bytes[6];
-                        if (sscanf(param1, "%02x:%02x:%02x:%02x:%02x:%02x",
-                                   &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6 &&
-                            sscanf(param1, "%02x-%02x-%02x-%02x-%02x-%02x",
-                                   &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6) {
-                            err_msg = "Invalid MAC address format";
-                        } else {
-                            for (int i = 0; i < 6; i++) {
-                                mac_bytes[i] = (uint8_t)mac[i];
-                            }
-
-                            uint32_t ip = is_block ? 0 : esp_ip4addr_aton(param2);
-                            if (!is_block && ip == IPADDR_NONE) {
-                                err_msg = "Invalid IP address";
-                            } else if (!is_block && (ip & 0x00FFFFFF) != (my_ap_ip & 0x00FFFFFF)) {
-                                err_msg = "IP must be in the same network as the AP";
-                            } else {
-                                const char *name = NULL;
-                                if (httpd_query_key_value(form, "dhcp_name", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
-                                    preprocess_string(param3);
-                                    name = param3;
-                                }
-                                add_dhcp_reservation(mac_bytes, ip, name);
-                                ESP_LOGI(TAG, "Added DHCP reservation: %s -> %s", param1, param2);
-                            }
-                        }
-
-                        if (err_msg != NULL) {
-                            /* Redirect back with error parameter */
-                            char redirect_url[128];
-                            snprintf(redirect_url, sizeof(redirect_url), "/mappings?error=%s", err_msg);
-                            for (char *p = redirect_url; *p; p++) {
-                                if (*p == ' ') *p = '+';
-                            }
-                            httpd_resp_set_status(req, "303 See Other");
-                            httpd_resp_set_hdr(req, "Location", redirect_url);
-                            httpd_resp_send(req, NULL, 0);
-                            free(form);
-                            return ESP_OK;
-                        }
-                    }
-                }
-            }
-
-            /* Check for delete DHCP reservation */
-            if (httpd_query_key_value(form, "del_dhcp_mac", param1, sizeof(param1)) == ESP_OK) {
-                preprocess_string(param1);
-                unsigned int mac[6];
-                if (sscanf(param1, "%02X:%02X:%02X:%02X:%02X:%02X",
-                           &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6 ||
-                    sscanf(param1, "%02x:%02x:%02x:%02x:%02x:%02x",
-                           &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
+                    // Parse MAC address
+                    unsigned int mac[6];
                     uint8_t mac_bytes[6];
-                    for (int i = 0; i < 6; i++) {
-                        mac_bytes[i] = (uint8_t)mac[i];
+                    if (sscanf(param1, "%02x:%02x:%02x:%02x:%02x:%02x",
+                               &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6 &&
+                        sscanf(param1, "%02x-%02x-%02x-%02x-%02x-%02x",
+                               &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) != 6) {
+                        err_msg = "Invalid MAC address format";
+                    } else {
+                        for (int i = 0; i < 6; i++) {
+                            mac_bytes[i] = (uint8_t)mac[i];
+                        }
+
+                        uint32_t ip = is_block ? 0 : esp_ip4addr_aton(param2);
+                        if (!is_block && ip == IPADDR_NONE) {
+                            err_msg = "Invalid IP address";
+                        } else if (!is_block && (ip & 0x00FFFFFF) != (my_ap_ip & 0x00FFFFFF)) {
+                            err_msg = "IP must be in the same network as the AP";
+                        } else {
+                            const char *name = NULL;
+                            if (httpd_query_key_value(form, "dhcp_name", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
+                                preprocess_string(param3);
+                                name = param3;
+                            }
+                            add_dhcp_reservation(mac_bytes, ip, name);
+                            ESP_LOGI(TAG, "Added DHCP reservation: %s -> %s", param1, param2);
+                        }
                     }
-                    del_dhcp_reservation(mac_bytes);
-                    ESP_LOGI(TAG, "Deleted DHCP reservation: %s", param1);
+
+                    if (err_msg != NULL) {
+                        /* Redirect back with error parameter */
+                        char redirect_url[128];
+                        snprintf(redirect_url, sizeof(redirect_url), "/mappings?error=%s", err_msg);
+                        for (char *p = redirect_url; *p; p++) {
+                            if (*p == ' ') *p = '+';
+                        }
+                        httpd_resp_set_status(req, "303 See Other");
+                        httpd_resp_set_hdr(req, "Location", redirect_url);
+                        httpd_resp_send(req, NULL, 0);
+                        free(form);
+                        return ESP_OK;
+                    }
                 }
             }
+        }
 
-            /* Check for add port mapping */
-            if (httpd_query_key_value(form, "port_action", param1, sizeof(param1)) == ESP_OK) {
-                if (strcmp(param1, "Add+Forward") == 0 || strcmp(param1, "Add Forward") == 0) {
-                    if (httpd_query_key_value(form, "proto", param1, sizeof(param1)) == ESP_OK &&
-                        httpd_query_key_value(form, "ext_port", param2, sizeof(param2)) == ESP_OK &&
-                        httpd_query_key_value(form, "int_ip", param3, sizeof(param3)) == ESP_OK &&
-                        httpd_query_key_value(form, "int_port", param4, sizeof(param4)) == ESP_OK) {
+        /* Check for delete DHCP reservation */
+        if (httpd_query_key_value(form, "del_dhcp_mac", param1, sizeof(param1)) == ESP_OK) {
+            preprocess_string(param1);
+            unsigned int mac[6];
+            if (sscanf(param1, "%02X:%02X:%02X:%02X:%02X:%02X",
+                       &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6 ||
+                sscanf(param1, "%02x:%02x:%02x:%02x:%02x:%02x",
+                       &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
+                uint8_t mac_bytes[6];
+                for (int i = 0; i < 6; i++) {
+                    mac_bytes[i] = (uint8_t)mac[i];
+                }
+                del_dhcp_reservation(mac_bytes);
+                ESP_LOGI(TAG, "Deleted DHCP reservation: %s", param1);
+            }
+        }
 
-                        preprocess_string(param3);
-                        uint8_t proto = (strcmp(param1, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
-                        uint16_t ext_port = atoi(param2);
-                        uint32_t int_ip = esp_ip4addr_aton(param3);
+        /* Check for add port mapping */
+        if (httpd_query_key_value(form, "port_action", param1, sizeof(param1)) == ESP_OK) {
+            if (strcmp(param1, "Add+Forward") == 0 || strcmp(param1, "Add Forward") == 0) {
+                if (httpd_query_key_value(form, "proto", param1, sizeof(param1)) == ESP_OK &&
+                    httpd_query_key_value(form, "ext_port", param2, sizeof(param2)) == ESP_OK &&
+                    httpd_query_key_value(form, "int_ip", param3, sizeof(param3)) == ESP_OK &&
+                    httpd_query_key_value(form, "int_port", param4, sizeof(param4)) == ESP_OK) {
 
-                        /* If IP parsing failed, try resolving as device name */
-                        if (int_ip == IPADDR_NONE) {
-                            if (!resolve_device_name_to_ip(param3, &int_ip)) {
-                                ESP_LOGW(TAG, "Invalid IP or device name: %s", param3);
+                    preprocess_string(param3);
+                    uint8_t proto = (strcmp(param1, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
+                    uint16_t ext_port = atoi(param2);
+                    uint32_t int_ip = esp_ip4addr_aton(param3);
+
+                    /* If IP parsing failed, try resolving as device name */
+                    if (int_ip == IPADDR_NONE) {
+                        if (!resolve_device_name_to_ip(param3, &int_ip)) {
+                            ESP_LOGW(TAG, "Invalid IP or device name: %s", param3);
+                        }
+                    }
+                    uint16_t int_port = atoi(param4);
+
+                    /* Validate internal IP is in same /24 network as AP interface */
+                    const char *err_msg = NULL;
+                    if (int_ip == IPADDR_NONE) {
+                        err_msg = "Invalid IP address or device name";
+                    } else if ((int_ip & 0x00FFFFFF) != (my_ap_ip & 0x00FFFFFF)) {
+                        esp_ip4_addr_t ap_addr;
+                        ap_addr.addr = my_ap_ip;
+                        ESP_LOGW(TAG, "Internal IP not in AP network (" IPSTR "/24)", IP2STR(&ap_addr));
+                        err_msg = "Internal IP must be in the same network as the AP";
+                    } else {
+                        /* Check if external port is already in use for this protocol */
+                        for (int i = 0; i < IP_PORTMAP_MAX; i++) {
+                            if (portmap_tab[i].valid &&
+                                portmap_tab[i].proto == proto &&
+                                portmap_tab[i].mport == ext_port) {
+                                ESP_LOGW(TAG, "External port %d already mapped", ext_port);
+                                err_msg = "External port is already in use";
+                                break;
                             }
                         }
-                        uint16_t int_port = atoi(param4);
+                    }
 
-                        /* Validate internal IP is in same /24 network as AP interface */
-                        const char *err_msg = NULL;
-                        if (int_ip == IPADDR_NONE) {
-                            err_msg = "Invalid IP address or device name";
-                        } else if ((int_ip & 0x00FFFFFF) != (my_ap_ip & 0x00FFFFFF)) {
-                            esp_ip4_addr_t ap_addr;
-                            ap_addr.addr = my_ap_ip;
-                            ESP_LOGW(TAG, "Internal IP not in AP network (" IPSTR "/24)", IP2STR(&ap_addr));
-                            err_msg = "Internal IP must be in the same network as the AP";
-                        } else {
-                            /* Check if external port is already in use for this protocol */
-                            for (int i = 0; i < IP_PORTMAP_MAX; i++) {
-                                if (portmap_tab[i].valid &&
-                                    portmap_tab[i].proto == proto &&
-                                    portmap_tab[i].mport == ext_port) {
-                                    ESP_LOGW(TAG, "External port %d already mapped", ext_port);
-                                    err_msg = "External port is already in use";
-                                    break;
-                                }
-                            }
+                    if (err_msg == NULL) {
+                        uint8_t iface = 0;  // Default: STA
+                        char iface_param[8];
+                        if (httpd_query_key_value(form, "iface", iface_param, sizeof(iface_param)) == ESP_OK) {
+                            if (strcmp(iface_param, "VPN") == 0) iface = 1;
                         }
-
-                        if (err_msg == NULL) {
-                            uint8_t iface = 0;  // Default: STA
-                            char iface_param[8];
-                            if (httpd_query_key_value(form, "iface", iface_param, sizeof(iface_param)) == ESP_OK) {
-                                if (strcmp(iface_param, "VPN") == 0) iface = 1;
-                            }
-                            add_portmap(proto, ext_port, int_ip, int_port, iface);
+                        add_portmap(proto, ext_port, int_ip, int_port, iface);
 #if CONFIG_ETH_UPLINK
-                            ESP_LOGI(TAG, "Added port mapping: %s %s %d -> %s:%d",
-                                     iface ? "VPN" : "ETH", param1, ext_port, param3, int_port);
+                        ESP_LOGI(TAG, "Added port mapping: %s %s %d -> %s:%d",
+                                 iface ? "VPN" : "ETH", param1, ext_port, param3, int_port);
 #else
-                            ESP_LOGI(TAG, "Added port mapping: %s %s %d -> %s:%d",
-                                     iface ? "VPN" : "STA", param1, ext_port, param3, int_port);
+                        ESP_LOGI(TAG, "Added port mapping: %s %s %d -> %s:%d",
+                                 iface ? "VPN" : "STA", param1, ext_port, param3, int_port);
 #endif
-                        } else {
-                            /* Redirect back with error parameter */
-                            char redirect_url[128];
-                            snprintf(redirect_url, sizeof(redirect_url), "/mappings?error=%s", err_msg);
-                            /* URL encode spaces */
-                            for (char *p = redirect_url; *p; p++) {
-                                if (*p == ' ') *p = '+';
-                            }
-                            httpd_resp_set_status(req, "303 See Other");
-                            httpd_resp_set_hdr(req, "Location", redirect_url);
-                            httpd_resp_send(req, NULL, 0);
-                            free(form);
-                            return ESP_OK;
+                    } else {
+                        /* Redirect back with error parameter */
+                        char redirect_url[128];
+                        snprintf(redirect_url, sizeof(redirect_url), "/mappings?error=%s", err_msg);
+                        /* URL encode spaces */
+                        for (char *p = redirect_url; *p; p++) {
+                            if (*p == ' ') *p = '+';
                         }
+                        httpd_resp_set_status(req, "303 See Other");
+                        httpd_resp_set_hdr(req, "Location", redirect_url);
+                        httpd_resp_send(req, NULL, 0);
+                        free(form);
+                        return ESP_OK;
                     }
                 }
             }
+        }
 
-            /* Check for delete port mapping */
-            if (httpd_query_key_value(form, "del_proto", param1, sizeof(param1)) == ESP_OK &&
-                httpd_query_key_value(form, "del_port", param2, sizeof(param2)) == ESP_OK) {
-                uint8_t proto = (strcmp(param1, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
-                uint16_t port = atoi(param2);
-                del_portmap(proto, port);
-                ESP_LOGI(TAG, "Deleted port mapping: %s %d", param1, port);
-            }
+        /* Check for delete port mapping */
+        if (httpd_query_key_value(form, "del_proto", param1, sizeof(param1)) == ESP_OK &&
+            httpd_query_key_value(form, "del_port", param2, sizeof(param2)) == ESP_OK) {
+            uint8_t proto = (strcmp(param1, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
+            uint16_t port = atoi(param2);
+            del_portmap(proto, port);
+            ESP_LOGI(TAG, "Deleted port mapping: %s %d", param1, port);
         }
         free(form);
     }
@@ -2884,124 +2880,122 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
     read_error_param(req, error_msg, sizeof(error_msg));
 
     if (form != NULL) {
-        {
-            char param[64];
+        char param[64];
 
-            /* Handle Add Rule */
-            if (httpd_query_key_value(form, "acl_action", param, sizeof(param)) == ESP_OK) {
-                if (strcmp(param, "Add+Rule") == 0 || strcmp(param, "Add Rule") == 0) {
-                    char list_str[8], proto_str[8], src_ip_str[32], src_port_str[8];
-                    char dst_ip_str[32], dst_port_str[8], action_str[8];
+        /* Handle Add Rule */
+        if (httpd_query_key_value(form, "acl_action", param, sizeof(param)) == ESP_OK) {
+            if (strcmp(param, "Add+Rule") == 0 || strcmp(param, "Add Rule") == 0) {
+                char list_str[8], proto_str[8], src_ip_str[32], src_port_str[8];
+                char dst_ip_str[32], dst_port_str[8], action_str[8];
 
-                    if (httpd_query_key_value(form, "acl_list", list_str, sizeof(list_str)) == ESP_OK &&
-                        httpd_query_key_value(form, "proto", proto_str, sizeof(proto_str)) == ESP_OK &&
-                        httpd_query_key_value(form, "src_ip", src_ip_str, sizeof(src_ip_str)) == ESP_OK &&
-                        httpd_query_key_value(form, "dst_ip", dst_ip_str, sizeof(dst_ip_str)) == ESP_OK &&
-                        httpd_query_key_value(form, "action", action_str, sizeof(action_str)) == ESP_OK) {
+                if (httpd_query_key_value(form, "acl_list", list_str, sizeof(list_str)) == ESP_OK &&
+                    httpd_query_key_value(form, "proto", proto_str, sizeof(proto_str)) == ESP_OK &&
+                    httpd_query_key_value(form, "src_ip", src_ip_str, sizeof(src_ip_str)) == ESP_OK &&
+                    httpd_query_key_value(form, "dst_ip", dst_ip_str, sizeof(dst_ip_str)) == ESP_OK &&
+                    httpd_query_key_value(form, "action", action_str, sizeof(action_str)) == ESP_OK) {
 
-                        preprocess_string(src_ip_str);
-                        preprocess_string(dst_ip_str);
+                    preprocess_string(src_ip_str);
+                    preprocess_string(dst_ip_str);
 
-                        uint8_t list_no = atoi(list_str);
-                        uint8_t proto = atoi(proto_str);
-                        uint8_t action = atoi(action_str);
+                    uint8_t list_no = atoi(list_str);
+                    uint8_t proto = atoi(proto_str);
+                    uint8_t action = atoi(action_str);
 
-                        const char *validation_error = NULL;
+                    const char *validation_error = NULL;
 
-                        /* Parse source IP (try IP/CIDR first, then device name) */
-                        uint32_t src_ip, src_mask;
-                        if (strlen(src_ip_str) == 0) {
-                            src_ip = 0;
-                            src_mask = 0;  /* any */
-                        } else if (!acl_parse_ip(src_ip_str, &src_ip, &src_mask)) {
+                    /* Parse source IP (try IP/CIDR first, then device name) */
+                    uint32_t src_ip, src_mask;
+                    if (strlen(src_ip_str) == 0) {
+                        src_ip = 0;
+                        src_mask = 0;  /* any */
+                    } else if (!acl_parse_ip(src_ip_str, &src_ip, &src_mask)) {
+                        /* Try resolving as device name */
+                        if (resolve_device_name_to_ip(src_ip_str, &src_ip)) {
+                            src_mask = 0xFFFFFFFF;  /* /32 for device names */
+                        } else {
+                            validation_error = "Invalid source IP address or device name";
+                        }
+                    }
+
+                    /* Parse destination IP (try IP/CIDR first, then device name) */
+                    uint32_t dst_ip, dst_mask;
+                    if (validation_error == NULL) {
+                        if (strlen(dst_ip_str) == 0) {
+                            dst_ip = 0;
+                            dst_mask = 0;  /* any */
+                        } else if (!acl_parse_ip(dst_ip_str, &dst_ip, &dst_mask)) {
                             /* Try resolving as device name */
-                            if (resolve_device_name_to_ip(src_ip_str, &src_ip)) {
-                                src_mask = 0xFFFFFFFF;  /* /32 for device names */
+                            if (resolve_device_name_to_ip(dst_ip_str, &dst_ip)) {
+                                dst_mask = 0xFFFFFFFF;  /* /32 for device names */
                             } else {
-                                validation_error = "Invalid source IP address or device name";
+                                validation_error = "Invalid destination IP address or device name";
                             }
                         }
+                    }
 
-                        /* Parse destination IP (try IP/CIDR first, then device name) */
-                        uint32_t dst_ip, dst_mask;
-                        if (validation_error == NULL) {
-                            if (strlen(dst_ip_str) == 0) {
-                                dst_ip = 0;
-                                dst_mask = 0;  /* any */
-                            } else if (!acl_parse_ip(dst_ip_str, &dst_ip, &dst_mask)) {
-                                /* Try resolving as device name */
-                                if (resolve_device_name_to_ip(dst_ip_str, &dst_ip)) {
-                                    dst_mask = 0xFFFFFFFF;  /* /32 for device names */
-                                } else {
-                                    validation_error = "Invalid destination IP address or device name";
-                                }
-                            }
+                    /* Parse ports */
+                    uint16_t s_port = 0, d_port = 0;
+                    if (httpd_query_key_value(form, "src_port", src_port_str, sizeof(src_port_str)) == ESP_OK) {
+                        preprocess_string(src_port_str);
+                        if (strcmp(src_port_str, "*") != 0 && strlen(src_port_str) > 0) {
+                            s_port = atoi(src_port_str);
                         }
+                    }
+                    if (httpd_query_key_value(form, "dst_port", dst_port_str, sizeof(dst_port_str)) == ESP_OK) {
+                        preprocess_string(dst_port_str);
+                        if (strcmp(dst_port_str, "*") != 0 && strlen(dst_port_str) > 0) {
+                            d_port = atoi(dst_port_str);
+                        }
+                    }
 
-                        /* Parse ports */
-                        uint16_t s_port = 0, d_port = 0;
-                        if (httpd_query_key_value(form, "src_port", src_port_str, sizeof(src_port_str)) == ESP_OK) {
-                            preprocess_string(src_port_str);
-                            if (strcmp(src_port_str, "*") != 0 && strlen(src_port_str) > 0) {
-                                s_port = atoi(src_port_str);
-                            }
+                    if (validation_error != NULL) {
+                        /* Redirect back with error parameter */
+                        char redirect_url[192];
+                        snprintf(redirect_url, sizeof(redirect_url), "/firewall?error=%s", validation_error);
+                        /* URL encode spaces */
+                        for (char *p = redirect_url; *p; p++) {
+                            if (*p == ' ') *p = '+';
                         }
-                        if (httpd_query_key_value(form, "dst_port", dst_port_str, sizeof(dst_port_str)) == ESP_OK) {
-                            preprocess_string(dst_port_str);
-                            if (strcmp(dst_port_str, "*") != 0 && strlen(dst_port_str) > 0) {
-                                d_port = atoi(dst_port_str);
-                            }
-                        }
+                        httpd_resp_set_status(req, "303 See Other");
+                        httpd_resp_set_hdr(req, "Location", redirect_url);
+                        httpd_resp_send(req, NULL, 0);
+                        free(form);
+                        return ESP_OK;
+                    }
 
-                        if (validation_error != NULL) {
-                            /* Redirect back with error parameter */
-                            char redirect_url[192];
-                            snprintf(redirect_url, sizeof(redirect_url), "/firewall?error=%s", validation_error);
-                            /* URL encode spaces */
-                            for (char *p = redirect_url; *p; p++) {
-                                if (*p == ' ') *p = '+';
-                            }
-                            httpd_resp_set_status(req, "303 See Other");
-                            httpd_resp_set_hdr(req, "Location", redirect_url);
-                            httpd_resp_send(req, NULL, 0);
-                            free(form);
-                            return ESP_OK;
-                        }
-
-                        if (list_no < MAX_ACL_LISTS) {
-                            if (acl_add(list_no, src_ip, src_mask, dst_ip, dst_mask, proto, s_port, d_port, action)) {
-                                save_acl_rules();
-                                ESP_LOGI(TAG, "Added ACL rule to list %d", list_no);
-                                action_performed = true;
-                            }
+                    if (list_no < MAX_ACL_LISTS) {
+                        if (acl_add(list_no, src_ip, src_mask, dst_ip, dst_mask, proto, s_port, d_port, action)) {
+                            save_acl_rules();
+                            ESP_LOGI(TAG, "Added ACL rule to list %d", list_no);
+                            action_performed = true;
                         }
                     }
                 }
             }
+        }
 
-            /* Handle Delete Rule */
-            if (httpd_query_key_value(form, "del_acl", param, sizeof(param)) == ESP_OK) {
-                uint8_t list_no = atoi(param);
-                char idx_str[8];
-                if (httpd_query_key_value(form, "del_idx", idx_str, sizeof(idx_str)) == ESP_OK) {
-                    uint8_t rule_idx = atoi(idx_str);
-                    if (list_no < MAX_ACL_LISTS && acl_delete(list_no, rule_idx)) {
-                        save_acl_rules();
-                        ESP_LOGI(TAG, "Deleted ACL rule %d from list %d", rule_idx, list_no);
-                        action_performed = true;
-                    }
-                }
-            }
-
-            /* Handle Clear List */
-            if (httpd_query_key_value(form, "clear_acl", param, sizeof(param)) == ESP_OK) {
-                uint8_t list_no = atoi(param);
-                if (list_no < MAX_ACL_LISTS) {
-                    acl_clear(list_no);
+        /* Handle Delete Rule */
+        if (httpd_query_key_value(form, "del_acl", param, sizeof(param)) == ESP_OK) {
+            uint8_t list_no = atoi(param);
+            char idx_str[8];
+            if (httpd_query_key_value(form, "del_idx", idx_str, sizeof(idx_str)) == ESP_OK) {
+                uint8_t rule_idx = atoi(idx_str);
+                if (list_no < MAX_ACL_LISTS && acl_delete(list_no, rule_idx)) {
                     save_acl_rules();
-                    ESP_LOGI(TAG, "Cleared ACL list %d", list_no);
+                    ESP_LOGI(TAG, "Deleted ACL rule %d from list %d", rule_idx, list_no);
                     action_performed = true;
                 }
+            }
+        }
+
+        /* Handle Clear List */
+        if (httpd_query_key_value(form, "clear_acl", param, sizeof(param)) == ESP_OK) {
+            uint8_t list_no = atoi(param);
+            if (list_no < MAX_ACL_LISTS) {
+                acl_clear(list_no);
+                save_acl_rules();
+                ESP_LOGI(TAG, "Cleared ACL list %d", list_no);
+                action_performed = true;
             }
         }
         free(form);
@@ -3390,67 +3384,65 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
     bool restarting = false;
 
     if (form != NULL) {
-        {
 
-            /* Handle AP settings */
-            if (httpd_query_key_value(form, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
-                preprocess_string(param1);
-                if (httpd_query_key_value(form, "ap_password", param2, sizeof(param2)) == ESP_OK) {
-                    preprocess_string(param2);
-                    if (strlen(param2) == 0) {
-                        strlcpy(param2, ap_passwd, sizeof(param2));
-                    }
-
-                    /* Reset AP parameters to defaults (keep SSID/password from form) */
-                    set_config_param_str("ap_ip",      DEFAULT_AP_IP);
-                    set_config_param_str("ap_dns",     "");
-                    free(ap_dns); ap_dns = strdup("");
-                    set_config_param_int("ap_hidden",   0); ap_ssid_hidden = 0;
-                    set_config_param_int("ap_authmode", 0); ap_authmode    = 0;
-                    set_config_param_int("ap_disabled", 0); ap_disabled    = false;
-                    set_config_param_int("ap_nat",      1); ap_nat_enabled = 1;
-
-                    int argc = 3;
-                    char* argv[3];
-                    argv[0] = "set_ap";
-                    argv[1] = param1;
-                    argv[2] = param2;
-                    set_ap(argc, argv);
+        /* Handle AP settings */
+        if (httpd_query_key_value(form, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
+            preprocess_string(param1);
+            if (httpd_query_key_value(form, "ap_password", param2, sizeof(param2)) == ESP_OK) {
+                preprocess_string(param2);
+                if (strlen(param2) == 0) {
+                    strlcpy(param2, ap_passwd, sizeof(param2));
                 }
+
+                /* Reset AP parameters to defaults (keep SSID/password from form) */
+                set_config_param_str("ap_ip",      DEFAULT_AP_IP);
+                set_config_param_str("ap_dns",     "");
+                free(ap_dns); ap_dns = strdup("");
+                set_config_param_int("ap_hidden",   0); ap_ssid_hidden = 0;
+                set_config_param_int("ap_authmode", 0); ap_authmode    = 0;
+                set_config_param_int("ap_disabled", 0); ap_disabled    = false;
+                set_config_param_int("ap_nat",      1); ap_nat_enabled = 1;
+
+                int argc = 3;
+                char* argv[3];
+                argv[0] = "set_ap";
+                argv[1] = param1;
+                argv[2] = param2;
+                set_ap(argc, argv);
             }
+        }
 
 #if !CONFIG_ETH_UPLINK
-            /* Handle STA settings */
-            if (httpd_query_key_value(form, "ssid", param1, sizeof(param1)) == ESP_OK) {
-                preprocess_string(param1);
-                if (httpd_query_key_value(form, "password", param2, sizeof(param2)) == ESP_OK) {
-                    preprocess_string(param2);
-                    if (strlen(param2) == 0) {
-                        strlcpy(param2, passwd, sizeof(param2));
-                    }
-
-                    /* Reset STA parameters to defaults (keep SSID/password from form) */
-                    set_config_param_str("static_ip",    ""); free(static_ip);   static_ip   = strdup("");
-                    set_config_param_str("subnet_mask",  ""); free(subnet_mask); subnet_mask = strdup("");
-                    set_config_param_str("gateway_addr", ""); free(gateway_addr); gateway_addr = strdup("");
-                    set_config_param_str("ent_username", ""); free(ent_username); ent_username = strdup("");
-                    set_config_param_str("ent_identity", ""); free(ent_identity); ent_identity = strdup("");
-                    set_config_param_int("ttls_phase2", 0); ttls_phase2       = 0;
-                    set_config_param_int("cert_bundle", 0); use_cert_bundle   = 0;
-                    set_config_param_int("no_time_chk", 0); disable_time_check = 0;
-
-                    int argc = 3;
-                    char* argv[3];
-                    argv[0] = "set_sta";
-                    argv[1] = param1;
-                    argv[2] = param2;
-                    set_sta(argc, argv);
-                    esp_timer_start_once(restart_timer, 500000);
-                    restarting = true;
+        /* Handle STA settings */
+        if (httpd_query_key_value(form, "ssid", param1, sizeof(param1)) == ESP_OK) {
+            preprocess_string(param1);
+            if (httpd_query_key_value(form, "password", param2, sizeof(param2)) == ESP_OK) {
+                preprocess_string(param2);
+                if (strlen(param2) == 0) {
+                    strlcpy(param2, passwd, sizeof(param2));
                 }
+
+                /* Reset STA parameters to defaults (keep SSID/password from form) */
+                set_config_param_str("static_ip",    ""); free(static_ip);   static_ip   = strdup("");
+                set_config_param_str("subnet_mask",  ""); free(subnet_mask); subnet_mask = strdup("");
+                set_config_param_str("gateway_addr", ""); free(gateway_addr); gateway_addr = strdup("");
+                set_config_param_str("ent_username", ""); free(ent_username); ent_username = strdup("");
+                set_config_param_str("ent_identity", ""); free(ent_identity); ent_identity = strdup("");
+                set_config_param_int("ttls_phase2", 0); ttls_phase2       = 0;
+                set_config_param_int("cert_bundle", 0); use_cert_bundle   = 0;
+                set_config_param_int("no_time_chk", 0); disable_time_check = 0;
+
+                int argc = 3;
+                char* argv[3];
+                argv[0] = "set_sta";
+                argv[1] = param1;
+                argv[2] = param2;
+                set_sta(argc, argv);
+                esp_timer_start_once(restart_timer, 500000);
+                restarting = true;
             }
-#endif
         }
+#endif
         free(form);
     }
 
@@ -3534,64 +3526,62 @@ static esp_err_t vpn_get_handler(httpd_req_t *req)
     bool saved = false;
 
     if (form != NULL) {
-        {
-            char param[128];
+        char param[128];
 
-            /* Check if this is a form submission */
-            if (httpd_query_key_value(form, "vpn_enabled", param, sizeof(param)) == ESP_OK) {
-                saved = true;
-                nvs_handle_t nvs;
-                if (nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
-                    nvs_set_i32(nvs, "vpn_enabled", atoi(param));
+        /* Check if this is a form submission */
+        if (httpd_query_key_value(form, "vpn_enabled", param, sizeof(param)) == ESP_OK) {
+            saved = true;
+            nvs_handle_t nvs;
+            if (nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+                nvs_set_i32(nvs, "vpn_enabled", atoi(param));
 
-                    if (httpd_query_key_value(form, "vpn_privkey", param, sizeof(param)) == ESP_OK) {
-                        preprocess_string(param);
-                        if (param[0] != '\0')
-                            nvs_set_str(nvs, "vpn_privkey", param);
-                    }
-                    if (httpd_query_key_value(form, "vpn_pubkey", param, sizeof(param)) == ESP_OK) {
-                        preprocess_string(param);
-                        nvs_set_str(nvs, "vpn_pubkey", param);
-                    }
-                    if (httpd_query_key_value(form, "vpn_psk", param, sizeof(param)) == ESP_OK) {
-                        preprocess_string(param);
-                        if (param[0] != '\0')
-                            nvs_set_str(nvs, "vpn_psk", param);
-                    }
-                    if (httpd_query_key_value(form, "vpn_endpoint", param, sizeof(param)) == ESP_OK) {
-                        preprocess_string(param);
-                        nvs_set_str(nvs, "vpn_endpoint", param);
-                    }
-                    if (httpd_query_key_value(form, "vpn_port", param, sizeof(param)) == ESP_OK) {
-                        nvs_set_i32(nvs, "vpn_port", atoi(param));
-                    }
-                    if (httpd_query_key_value(form, "vpn_ip", param, sizeof(param)) == ESP_OK) {
-                        preprocess_string(param);
-                        nvs_set_str(nvs, "vpn_ip", param);
-                    }
-                    if (httpd_query_key_value(form, "vpn_mask", param, sizeof(param)) == ESP_OK) {
-                        preprocess_string(param);
-                        nvs_set_str(nvs, "vpn_mask", param);
-                    }
-                    if (httpd_query_key_value(form, "vpn_dns", param, sizeof(param)) == ESP_OK) {
-                        preprocess_string(param);
-                        nvs_set_str(nvs, "vpn_dns", param);
-                    }
-                    if (httpd_query_key_value(form, "vpn_ka", param, sizeof(param)) == ESP_OK) {
-                        nvs_set_i32(nvs, "vpn_ka", atoi(param));
-                    }
-                    if (httpd_query_key_value(form, "vpn_ks", param, sizeof(param)) == ESP_OK) {
-                        nvs_set_i32(nvs, "vpn_ks", atoi(param));
-                    }
-                    if (httpd_query_key_value(form, "vpn_rall", param, sizeof(param)) == ESP_OK) {
-                        nvs_set_i32(nvs, "vpn_rall", atoi(param));
-                    }
-
-                    nvs_commit(nvs);
-                    nvs_close(nvs);
-                    ESP_LOGI(TAG, "VPN settings saved, scheduling restart");
-                    esp_timer_start_once(restart_timer, 500000);
+                if (httpd_query_key_value(form, "vpn_privkey", param, sizeof(param)) == ESP_OK) {
+                    preprocess_string(param);
+                    if (param[0] != '\0')
+                        nvs_set_str(nvs, "vpn_privkey", param);
                 }
+                if (httpd_query_key_value(form, "vpn_pubkey", param, sizeof(param)) == ESP_OK) {
+                    preprocess_string(param);
+                    nvs_set_str(nvs, "vpn_pubkey", param);
+                }
+                if (httpd_query_key_value(form, "vpn_psk", param, sizeof(param)) == ESP_OK) {
+                    preprocess_string(param);
+                    if (param[0] != '\0')
+                        nvs_set_str(nvs, "vpn_psk", param);
+                }
+                if (httpd_query_key_value(form, "vpn_endpoint", param, sizeof(param)) == ESP_OK) {
+                    preprocess_string(param);
+                    nvs_set_str(nvs, "vpn_endpoint", param);
+                }
+                if (httpd_query_key_value(form, "vpn_port", param, sizeof(param)) == ESP_OK) {
+                    nvs_set_i32(nvs, "vpn_port", atoi(param));
+                }
+                if (httpd_query_key_value(form, "vpn_ip", param, sizeof(param)) == ESP_OK) {
+                    preprocess_string(param);
+                    nvs_set_str(nvs, "vpn_ip", param);
+                }
+                if (httpd_query_key_value(form, "vpn_mask", param, sizeof(param)) == ESP_OK) {
+                    preprocess_string(param);
+                    nvs_set_str(nvs, "vpn_mask", param);
+                }
+                if (httpd_query_key_value(form, "vpn_dns", param, sizeof(param)) == ESP_OK) {
+                    preprocess_string(param);
+                    nvs_set_str(nvs, "vpn_dns", param);
+                }
+                if (httpd_query_key_value(form, "vpn_ka", param, sizeof(param)) == ESP_OK) {
+                    nvs_set_i32(nvs, "vpn_ka", atoi(param));
+                }
+                if (httpd_query_key_value(form, "vpn_ks", param, sizeof(param)) == ESP_OK) {
+                    nvs_set_i32(nvs, "vpn_ks", atoi(param));
+                }
+                if (httpd_query_key_value(form, "vpn_rall", param, sizeof(param)) == ESP_OK) {
+                    nvs_set_i32(nvs, "vpn_rall", atoi(param));
+                }
+
+                nvs_commit(nvs);
+                nvs_close(nvs);
+                ESP_LOGI(TAG, "VPN settings saved, scheduling restart");
+                esp_timer_start_once(restart_timer, 500000);
             }
         }
         free(form);
