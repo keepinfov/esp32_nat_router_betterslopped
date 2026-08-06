@@ -20,8 +20,12 @@ import os
 import struct
 import sys
 
-PARTITION_MAGIC = 0xAA50
-PARTITION_ENTRY = "<HBBLL16sL"   # magic, type, subtype, offset, size, label, flags
+# Layout and magic taken from ESP-IDF's own gen_esp32part.py. The magic is
+# compared as the two raw bytes it is written as, rather than unpacked into an
+# integer: read as a little-endian short, \xAA\x50 is 0x50AA, and getting that
+# backwards is exactly the bug this comment exists to prevent a repeat of.
+PARTITION_MAGIC = b"\xAA\x50"
+PARTITION_ENTRY = "<2sBBLL16sL"  # magic, type, subtype, offset, size, label, flags
 ENTRY_SIZE = 32
 TYPE_APP = 0x00
 SUBTYPE_OTA_0 = 0x10
@@ -36,7 +40,7 @@ def ota_slot_size(table_path):
         magic, ptype, subtype, _, size, label, _ = struct.unpack_from(
             PARTITION_ENTRY, blob, offset)
         if magic != PARTITION_MAGIC:
-            break   # end of table (or the MD5 entry, which has its own magic)
+            break   # end of table (or the trailing MD5 entry, magic \xEB\xEB)
         if ptype == TYPE_APP and subtype == SUBTYPE_OTA_0:
             return size, label.rstrip(b"\x00").decode("utf-8", "replace")
     return None, None

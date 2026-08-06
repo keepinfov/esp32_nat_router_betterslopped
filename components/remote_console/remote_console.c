@@ -281,14 +281,17 @@ esp_err_t remote_console_init(void) {
 
     /* Start server if enabled */
     if (rc_config.enabled) {
-        /* Create server task */
+        /* Through a plain handle: xTaskCreate takes TaskHandle_t*, and passing
+         * the volatile-qualified field directly drops the qualifier. */
+        TaskHandle_t created = NULL;
         BaseType_t ret = xTaskCreate(remote_console_task, "remote_console",
                                      RC_TASK_STACK_SIZE, NULL,
-                                     RC_TASK_PRIORITY, &rc_state.task_handle);
+                                     RC_TASK_PRIORITY, &created);
         if (ret != pdPASS) {
             ESP_LOGE(TAG, "Failed to create remote console task");
             return ESP_ERR_NO_MEM;
         }
+        rc_state.task_handle = created;
 
         rc_state.state = RC_STATE_LISTENING;
         ESP_LOGI(TAG, "Remote console started on port %d", rc_config.port);
@@ -311,15 +314,17 @@ esp_err_t remote_console_enable(void) {
     /* Start server if not already running */
     if (rc_state.task_handle == NULL) {
         rc_state.shutdown_requested = false;
+        TaskHandle_t created = NULL;
         BaseType_t ret = xTaskCreate(remote_console_task, "remote_console",
                                      RC_TASK_STACK_SIZE, NULL,
-                                     RC_TASK_PRIORITY, &rc_state.task_handle);
+                                     RC_TASK_PRIORITY, &created);
         if (ret != pdPASS) {
             ESP_LOGE(TAG, "Failed to create remote console task");
             rc_config.enabled = false;
             save_config();
             return ESP_ERR_NO_MEM;
         }
+        rc_state.task_handle = created;
         rc_state.state = RC_STATE_LISTENING;
     }
 

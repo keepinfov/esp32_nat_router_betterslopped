@@ -321,7 +321,12 @@ static void start_sender(void)
     if (!s_pktbuf) s_pktbuf = malloc(SYSLOG_PKT_MAX);
 
     if (!s_sender_task && s_queue) {
-        xTaskCreate(sender_task, "syslog_tx", 3072, NULL, 5, &s_sender_task);
+        /* Through a plain handle: xTaskCreate takes TaskHandle_t*, and passing
+         * the volatile-qualified global directly drops the qualifier. */
+        TaskHandle_t created = NULL;
+        if (xTaskCreate(sender_task, "syslog_tx", 3072, NULL, 5, &created) == pdPASS) {
+            s_sender_task = created;
+        }
     }
 }
 
