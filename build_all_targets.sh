@@ -49,7 +49,7 @@ declare -A TARGET_CHIP=(
 # sdkconfig.defaults and silently drops the per-target overrides, which is how
 # the published C5 binary ended up without its reduced log level.
 declare -A TARGET_SDKCONFIG=(
-    ["esp32"]="sdkconfig.defaults"
+    ["esp32"]="sdkconfig.defaults;sdkconfig.defaults.esp32"
     ["esp32s3"]="sdkconfig.defaults;sdkconfig.defaults.esp32s3"
     ["esp32c6"]="sdkconfig.defaults;sdkconfig.defaults.esp32c6"
     ["esp32c3"]="sdkconfig.defaults;sdkconfig.defaults.esp32c3"

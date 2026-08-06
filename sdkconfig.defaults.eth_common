@@ -1,6 +1,9 @@
 # Settings shared by every LAN8720 Ethernet-uplink board.
 # Board files add PHY address, power GPIO and RMII clocking on top.
 
+# Both Ethernet boards are ESP32-based, so 240 MHz applies to each of them.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
 # Ethernet uplink mode
 CONFIG_ETH_UPLINK=y
 CONFIG_ETH_MDC_GPIO=23

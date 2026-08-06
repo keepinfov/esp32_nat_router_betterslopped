@@ -1,9 +1,5 @@
-# ESP32-S3 target overrides
+# ESP32 target overrides
 
 # 240 MHz is a per-chip choice, so it is set per target rather than in the
 # shared defaults: the C3 and C6 have no such symbol and warn about it.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-
-# Use built-in USB_SERIAL_JTAG for console output
-CONFIG_ESP_CONSOLE_UART_DEFAULT=n
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
