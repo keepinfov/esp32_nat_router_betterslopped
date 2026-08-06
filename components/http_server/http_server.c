@@ -34,7 +34,6 @@
 #include "lwip/sockets.h"
 
 #include "pages.h"
-#include "favicon_png.h"
 #include "router_globals.h"
 #include "vpn_config.h"
 #include "pcap_capture.h"
@@ -1151,18 +1150,164 @@ char* html_escape(const char* src) {
     return res;
 }
 
-static esp_err_t favicon_get_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "image/png");
-    httpd_resp_send(req, (const char*)favicon_png, favicon_png_len);
-    return ESP_OK;
+/* --- Static assets -------------------------------------------------------
+ *
+ * app.css, app.js and favicon.svg live in components/http_server/www/ and are
+ * gzipped into the image at build time (see CMakeLists.txt).  Serving them as
+ * separate cacheable files is what lets the page templates drop their own
+ * <style> blocks.
+ *
+ * The validator is the running app's ELF hash, so an OTA update invalidates
+ * every asset at once.  Cache-Control is "no-cache" rather than a long max-age
+ * on purpose: asset URLs are not versioned (wildcard URI matching is off), so a
+ * cached stylesheet would otherwise outlive the markup it belongs to.  The cost
+ * is one small conditional request per page load instead of re-sending the CSS.
+ */
+
+extern const uint8_t app_css_gz_start[]     asm("_binary_app_css_gz_start");
+extern const uint8_t app_css_gz_end[]       asm("_binary_app_css_gz_end");
+extern const uint8_t app_js_gz_start[]      asm("_binary_app_js_gz_start");
+extern const uint8_t app_js_gz_end[]        asm("_binary_app_js_gz_end");
+extern const uint8_t favicon_svg_gz_start[] asm("_binary_favicon_svg_gz_start");
+extern const uint8_t favicon_svg_gz_end[]   asm("_binary_favicon_svg_gz_end");
+
+static char s_asset_etag[20];
+
+static const char *asset_etag(void)
+{
+    if (s_asset_etag[0] == '\0') {
+        const esp_app_desc_t *desc = esp_app_get_description();
+        snprintf(s_asset_etag, sizeof(s_asset_etag), "\"%02x%02x%02x%02x%02x%02x%02x%02x\"",
+                 desc->app_elf_sha256[0], desc->app_elf_sha256[1],
+                 desc->app_elf_sha256[2], desc->app_elf_sha256[3],
+                 desc->app_elf_sha256[4], desc->app_elf_sha256[5],
+                 desc->app_elf_sha256[6], desc->app_elf_sha256[7]);
+    }
+    return s_asset_etag;
 }
 
+static esp_err_t send_static_gz(httpd_req_t *req, const char *ctype,
+                                const uint8_t *start, const uint8_t *end)
+{
+    const char *etag = asset_etag();
+    char inm[24];
+
+    if (httpd_req_get_hdr_value_str(req, "If-None-Match", inm, sizeof(inm)) == ESP_OK &&
+        strcmp(inm, etag) == 0) {
+        httpd_resp_set_status(req, "304 Not Modified");
+        httpd_resp_set_hdr(req, "ETag", etag);
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, ctype);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "ETag", etag);
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    return httpd_resp_send(req, (const char *)start, end - start);
+}
+
+static esp_err_t app_css_handler(httpd_req_t *req) {
+    return send_static_gz(req, "text/css", app_css_gz_start, app_css_gz_end);
+}
+
+static esp_err_t app_js_handler(httpd_req_t *req) {
+    return send_static_gz(req, "application/javascript", app_js_gz_start, app_js_gz_end);
+}
+
+static esp_err_t favicon_get_handler(httpd_req_t *req) {
+    return send_static_gz(req, "image/svg+xml", favicon_svg_gz_start, favicon_svg_gz_end);
+}
+
+static const httpd_uri_t app_css_uri = {
+    .uri = "/app.css", .method = HTTP_GET, .handler = app_css_handler, .user_ctx = NULL
+};
+
+static const httpd_uri_t app_js_uri = {
+    .uri = "/app.js", .method = HTTP_GET, .handler = app_js_handler, .user_ctx = NULL
+};
+
 static const httpd_uri_t favicon_uri = {
+    .uri       = "/favicon.svg",
+    .method    = HTTP_GET,
+    .handler   = favicon_get_handler,
+    .user_ctx  = NULL
+};
+
+/* Older bookmarks and any not-yet-migrated template still ask for this. */
+static const httpd_uri_t favicon_png_uri = {
     .uri       = "/favicon.png",
     .method    = HTTP_GET,
     .handler   = favicon_get_handler,
     .user_ctx  = NULL
 };
+
+/* --- Shared page chrome --------------------------------------------------
+ *
+ * One nav bar on every page replaces the seven hand-written headers and the
+ * "Home" button that used to sit at the bottom of each one.
+ */
+
+/* The tab id is stored rather than inferred from the index: the Ethernet build
+ * drops two entries, which would otherwise shift every highlight. */
+static const struct { const char *href; const char *label; page_tab_t tab; } NAV[] = {
+    { "/",         "Status",   TAB_HOME     },
+#if !CONFIG_ETH_UPLINK
+    { "/setup",    "Setup",    TAB_SETUP    },
+    { "/scan",     "Scan",     TAB_SCAN     },
+#endif
+    { "/config",   "Config",   TAB_CONFIG   },
+    { "/mappings", "Mappings", TAB_MAPPINGS },
+    { "/firewall", "Firewall", TAB_FIREWALL },
+    { "/vpn",      "VPN",      TAB_VPN      },
+};
+
+/* Emits everything up to the start of the page body. 'active' highlights one
+ * tab; pass TAB_NONE for pages that are not in the bar. Passing show_logout
+ * false keeps the button off the pre-login page. */
+static esp_err_t send_page_head(httpd_req_t *req, const char *title,
+                                page_tab_t active, bool show_logout)
+{
+    SEND_CHUNK(req, DOC_HEAD_A, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, title, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, DOC_HEAD_B, HTTPD_RESP_USE_STRLEN);
+
+    SEND_CHUNK(req, HDR_A, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, title, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, HDR_B, HTTPD_RESP_USE_STRLEN);
+    if (show_logout) {
+        SEND_CHUNK(req, LOGOUT_FORM, HTTPD_RESP_USE_STRLEN);
+    }
+    SEND_CHUNK(req, HDR_C, HTTPD_RESP_USE_STRLEN);
+
+    SEND_CHUNK(req, NAV_OPEN, HTTPD_RESP_USE_STRLEN);
+    for (size_t i = 0; i < sizeof(NAV) / sizeof(NAV[0]); i++) {
+        char link[80];
+        int n = snprintf(link, sizeof(link), "<a href=%s%s>%s</a>",
+                         NAV[i].href,
+                         NAV[i].tab == active ? " class=a" : "",
+                         NAV[i].label);
+        SEND_CHUNK(req, link, n);
+    }
+    SEND_CHUNK(req, NAV_CLOSE, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static esp_err_t send_page_foot(httpd_req_t *req)
+{
+    const esp_app_desc_t *d = esp_app_get_description();
+    char buf[192];
+    int n = snprintf(buf, sizeof(buf),
+                     "v%s &middot; %s %s &middot; IDF " IDF_VER " &middot; "
+                     "<a href=https://github.com/martin-ger/esp32_nat_router "
+                     "target=_blank rel=noopener>Source</a>",
+                     d->version, d->date, d->time);
+    SEND_CHUNK(req, DOC_FOOT_A, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, buf, n);
+    SEND_CHUNK(req, DOC_FOOT_B, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
 
 /* Index page GET handler - System Status with navigation */
 static esp_err_t index_get_handler(httpd_req_t *req)
@@ -3057,7 +3202,6 @@ static esp_err_t scan_get_handler(httpd_req_t *req)
     uint16_t ap_count = 0;
     wifi_ap_record_t *ap_list = NULL;
     bool scan_in_progress = false;
-    int refresh_time = 15;  /* Default refresh interval */
 
     /* Suppress STA reconnect attempts while on the scan page */
     if (!ap_connect) {
@@ -3068,7 +3212,7 @@ static esp_err_t scan_get_handler(httpd_req_t *req)
     esp_err_t err = esp_wifi_scan_get_ap_num(&ap_count);
 
     if (err == ESP_OK && ap_count > 0) {
-        /* We have results from a previous scan — read them */
+        /* We have results from a previous scan - read them */
         if (ap_count > 20) ap_count = 20;
         ap_list = malloc(sizeof(wifi_ap_record_t) * ap_count);
         if (ap_list != NULL) {
@@ -3089,144 +3233,107 @@ static esp_err_t scan_get_handler(httpd_req_t *req)
     if (!ap_connect) wifi_scan_active = true;
     err = esp_wifi_scan_start(&scan_config, false);  /* Non-blocking */
 
-    if (ap_count == 0) {
-        if (err == ESP_OK || err == ESP_ERR_WIFI_STATE) {
-            /* No previous results, scan just started */
-            scan_in_progress = true;
-            refresh_time = 2;  /* Quick refresh to get results */
-        }
+    if (ap_count == 0 && (err == ESP_OK || err == ESP_ERR_WIFI_STATE)) {
+        scan_in_progress = true;
     }
 
-    /* Build the table header with optional Connect column */
-    char header_extra[64] = "";
+    /* Reload only while a scan is actually running. Once results are on screen
+     * the page stays put, instead of the old unconditional 15 s refresh that
+     * threw away the scroll position. Sent as a header so the markup and the
+     * shared <head> stay untouched; the literals are static because esp_http_server
+     * keeps the pointer until the response is sent. */
+    if (scan_in_progress) {
+        httpd_resp_set_hdr(req, "Refresh", "2");
+    }
+
+    /* ap_list is live from here to the free() below, so bail-outs have to
+     * release it rather than use SEND_CHUNK's bare return. */
+#define SCAN_CHUNK(buf, len) \
+    do { \
+        if (httpd_resp_send_chunk(req, (buf), (len)) != ESP_OK) { \
+            free(ap_list); \
+            return ESP_FAIL; \
+        } \
+    } while (0)
+
+    if (send_page_head(req, "WiFi Scan", TAB_SCAN,
+                       can_connect && password_protection_enabled) != ESP_OK) {
+        free(ap_list);
+        return ESP_FAIL;
+    }
+
+    SCAN_CHUNK(SCAN_TABLE_OPEN, HTTPD_RESP_USE_STRLEN);
     if (can_connect) {
-        strcpy(header_extra, "<th>Action</th>");
+        SCAN_CHUNK(SCAN_TABLE_ACTION_TH, HTTPD_RESP_USE_STRLEN);
     }
-
-    /* Build scan results HTML */
-    char scan_html[4096] = "";
-    int html_offset = 0;
+    SCAN_CHUNK(SCAN_TABLE_MID, HTTPD_RESP_USE_STRLEN);
 
     if (ap_count == 0) {
-        if (scan_in_progress) {
-            snprintf(scan_html, sizeof(scan_html),
-                "<tr><td colspan='%d' style='text-align:center; color:#00d9ff;'>"
-                "<span style='display:inline-block; animation: pulse 1s infinite;'>📡 Scanning...</span>"
-                "</td></tr>",
-                can_connect ? 5 : 4);
-        } else {
-            snprintf(scan_html, sizeof(scan_html),
-                "<tr><td colspan='%d' style='text-align:center; color:#888;'>No networks found</td></tr>",
-                can_connect ? 5 : 4);
-        }
+        char row[128];
+        int n = snprintf(row, sizeof(row), "<tr><td colspan=%d class=n>%s</td></tr>",
+                         can_connect ? 5 : 4,
+                         scan_in_progress ? "Scanning..." : "No networks found");
+        SCAN_CHUNK(row, n);
     } else {
-        for (int i = 0; i < ap_count && html_offset < (int)(sizeof(scan_html) - 512); i++) {
-            /* Determine signal strength and build visual bars */
-            const char *signal_class;
+        for (int i = 0; i < ap_count; i++) {
             int rssi = ap_list[i].rssi;
-            int bars;  /* Number of active bars (1-4) */
 
-            if (rssi >= -50) {
-                signal_class = "signal-excellent";
-                bars = 4;
-            } else if (rssi >= -60) {
-                signal_class = "signal-good";
-                bars = 3;
-            } else if (rssi >= -70) {
-                signal_class = "signal-fair";
-                bars = 2;
-            } else if (rssi >= -80) {
-                signal_class = "signal-weak";
-                bars = 1;
-            } else {
-                signal_class = "signal-poor";
-                bars = 1;
-            }
+            /* Quality is spelled out rather than drawn, so it survives a
+             * screen reader and a monochrome screen; colour only reinforces it. */
+            const char *quality_class, *quality;
+            if (rssi >= -55)      { quality_class = "ok"; quality = "Excellent"; }
+            else if (rssi >= -67) { quality_class = "ok"; quality = "Good";      }
+            else if (rssi >= -75) { quality_class = "wn"; quality = "Fair";      }
+            else                  { quality_class = "er"; quality = "Weak";      }
 
-            /* HTML-escape SSID for display */
             char *safe_ssid = html_escape((const char *)ap_list[i].ssid);
             if (safe_ssid == NULL) {
                 safe_ssid = strdup("(unknown)");
+                if (safe_ssid == NULL) continue;
             }
 
-            /* Build connect button if allowed */
-            char connect_cell[256] = "";
-            if (can_connect) {
-                char encoded_ssid[128];
-                url_encode((const char *)ap_list[i].ssid, encoded_ssid, sizeof(encoded_ssid));
-                snprintf(connect_cell, sizeof(connect_cell),
-                    "<td><a href='/setup?ssid=%s' class='connect-button'>Connect</a></td>",
-                    encoded_ssid);
-            }
-
-            /* Build signal bars HTML with CSS divs */
-            char signal_bars_html[384];
-            const int bar_heights[] = {4, 8, 12, 16};  /* px */
-            int sb_offset = 0;
-            sb_offset += snprintf(signal_bars_html, sizeof(signal_bars_html),
-                "<span class='signal-bars'>");
-            for (int b = 0; b < 4; b++) {
-                if (b < bars) {
-                    sb_offset += snprintf(signal_bars_html + sb_offset, sizeof(signal_bars_html) - sb_offset,
-                        "<span class='bar active %s' style='height:%dpx;'></span>",
-                        signal_class, bar_heights[b]);
-                } else {
-                    sb_offset += snprintf(signal_bars_html + sb_offset, sizeof(signal_bars_html) - sb_offset,
-                        "<span class='bar' style='height:%dpx;'></span>", bar_heights[b]);
-                }
-            }
-            sb_offset += snprintf(signal_bars_html + sb_offset, sizeof(signal_bars_html) - sb_offset,
-                "</span>");
-
-            /* Channel / band info */
-            char ch_info[80];
+            char ch_info[48];
 #if WIFI_HAS_5GHZ
-            snprintf(ch_info, sizeof(ch_info), "%d <span style='color:#888;font-size:0.75rem;'>%s</span>",
-                     ap_list[i].primary, ap_list[i].primary > 14 ? "5G" : "2.4G");
+            snprintf(ch_info, sizeof(ch_info), "%d <span class=n>&middot; %s</span>",
+                     ap_list[i].primary, ap_list[i].primary > 14 ? "5 GHz" : "2.4 GHz");
 #else
             snprintf(ch_info, sizeof(ch_info), "%d", ap_list[i].primary);
 #endif
 
-            html_offset += snprintf(scan_html + html_offset, sizeof(scan_html) - html_offset,
-                "<tr>"
-                "<td>%s</td>"
-                "<td style='white-space:nowrap;'>%s<span style='color:#888;font-size:0.8rem;margin-left:0.5em;'>%d dBm</span></td>"
-                "<td>%s</td>"
-                "<td>%s</td>"
-                "%s"
-                "</tr>",
-                safe_ssid,
-                signal_bars_html, rssi,
+            char row[512];
+            int n = snprintf(row, sizeof(row),
+                "<tr><td>%s</td>"
+                "<td><span class=\"bd %s\">%s</span> <span class=n>%d dBm</span></td>"
+                "<td>%s</td><td>%s</td>",
+                safe_ssid[0] ? safe_ssid : "<span class=n>(hidden)</span>",
+                quality_class, quality, rssi,
                 ch_info,
-                web_auth_mode_to_str(ap_list[i].authmode),
-                connect_cell
-            );
-
+                web_auth_mode_to_str(ap_list[i].authmode));
             free(safe_ssid);
+            if (n > 0) {
+                SCAN_CHUNK(row, n);
+            }
+
+            if (can_connect) {
+                char encoded_ssid[128];
+                char cell[192];
+                url_encode((const char *)ap_list[i].ssid, encoded_ssid, sizeof(encoded_ssid));
+                n = snprintf(cell, sizeof(cell),
+                             "<td><a class=\"b s\" href=/setup?ssid=%s>Connect</a></td>",
+                             encoded_ssid);
+                SCAN_CHUNK(cell, n);
+            }
+            SCAN_CHUNK("</tr>", 5);
         }
     }
 
-    if (ap_list != NULL) {
-        free(ap_list);
-    }
+    free(ap_list);
+    ap_list = NULL;
+#undef SCAN_CHUNK
 
-    /* Build the page */
-    const char* scan_page_template = SCAN_PAGE;
-    int page_len = strlen(scan_page_template) + strlen(header_extra) + strlen(scan_html) + 128;
-    char* scan_page = malloc(page_len);
-
-    if (scan_page == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for scan page");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-        return ESP_ERR_NO_MEM;
-    }
-
-    snprintf(scan_page, page_len, scan_page_template, refresh_time, ap_count, header_extra, scan_html);
-
-    httpd_resp_send(req, scan_page, strlen(scan_page));
-    free(scan_page);
-
-    return ESP_OK;
+    SEND_CHUNK(req, SCAN_TABLE_CLOSE, HTTPD_RESP_USE_STRLEN);
+    send_page_foot(req);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 static httpd_uri_t scanp = {
@@ -3606,7 +3713,10 @@ httpd_handle_t start_webserver(uint16_t port)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = port;
     config.stack_size = 16384;  // Large stack needed for mappings page with 3x 2KB HTML buffers
-    config.max_uri_handlers = 14;
+    /* Pages, the JSON APIs, and the three static assets (/app.css, /app.js,
+     * /favicon.svg plus the /favicon.png alias). Registration fails silently
+     * past this limit, so it has to stay ahead of the list below. */
+    config.max_uri_handlers = 18;
     config.max_uri_len = 1024;
     config.open_fn = http_open_fn;
     /* Fail a stalled send/recv fast (default 5s) so an abandoned connection
@@ -3651,6 +3761,9 @@ httpd_handle_t start_webserver(uint16_t port)
         httpd_register_uri_handler(server, &setupp);
 #endif
         httpd_register_uri_handler(server, &favicon_uri);
+        httpd_register_uri_handler(server, &favicon_png_uri);
+        httpd_register_uri_handler(server, &app_css_uri);
+        httpd_register_uri_handler(server, &app_js_uri);
         httpd_register_uri_handler(server, &config_exportp);
         httpd_register_uri_handler(server, &config_importp);
         httpd_register_uri_handler(server, &vpn_importp);

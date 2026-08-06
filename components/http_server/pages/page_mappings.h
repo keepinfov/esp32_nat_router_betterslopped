@@ -3,9 +3,9 @@
 
 /* Mappings Page (DHCP Reservations + Port Forwarding) */
 /* Mappings Page - Chunked for streaming */
-#define MAPPINGS_CHUNK_HEAD "<html>\
+#define MAPPINGS_CHUNK_HEAD "<!DOCTYPE html><html lang=en>\
 <head>\
-<meta name='viewport' content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0'>\
+<meta name='viewport' content='width=device-width, initial-scale=1'>\
 <meta charset='UTF-8'>\
 <title>Mappings</title>\
 <link rel='icon' href='favicon.png'>\

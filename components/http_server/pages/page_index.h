@@ -8,9 +8,9 @@
 #endif
 
 /* Index Page - Chunked for streaming */
-#define INDEX_CHUNK_HEAD "<html>\
+#define INDEX_CHUNK_HEAD "<!DOCTYPE html><html lang=en>\
 <head>\
-<meta name='viewport' content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0'>\
+<meta name='viewport' content='width=device-width, initial-scale=1'>\
 <meta charset='UTF-8'>\
 <title>" INDEX_TITLE "</title>\
 <link rel='icon' href='favicon.png'>\

@@ -1,0 +1,203 @@
+/* ESP32 NAT Router web UI.
+ *
+ * One stylesheet for every page, served pre-gzipped from flash. Keep it small:
+ * the C3 and C5 builds have very little room left in their OTA slot, and this
+ * file is measured after gzip, not before.
+ *
+ * Conventions: short class names because every one of them is repeated across
+ * the HTML that the firmware streams. Colours come from custom properties so
+ * light and dark are one declaration each, not two stylesheets.
+ */
+
+:root {
+  --bg: #f4f6f8;
+  --bg2: #fff;
+  --fg: #1a1d21;
+  --fg2: #5c6570;
+  --ln: #dde2e8;
+  --ac: #0b64c8;
+  --acf: #fff;
+  --ok: #1c7a3e;
+  --wn: #8a5600;
+  --er: #b3261e;
+  --r: 6px;
+  --s: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181b;
+    --bg2: #1d2125;
+    --fg: #e5e9ed;
+    --fg2: #98a2ac;
+    --ln: #2d333a;
+    --ac: #4d9cf0;
+    --acf: #08121d;
+    --ok: #4ec27a;
+    --wn: #dda23c;
+    --er: #f4695e;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0 }
+
+body {
+  font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  padding: var(--s);
+}
+
+/* Layout ------------------------------------------------------------- */
+
+.w { max-width: 860px; margin: 0 auto }
+
+.hd {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  margin-bottom: var(--s);
+}
+
+.hd h1 { font-size: 1.25rem; font-weight: 600; flex: 1 }
+.hd img { width: 32px; height: 32px }
+
+/* Tab bar. Scrolls sideways on narrow screens instead of wrapping into a
+   second row that pushes the content down. */
+.nav {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--ln);
+  margin-bottom: 1rem;
+}
+
+.nav a {
+  padding: 10px 14px;
+  color: var(--fg2);
+  text-decoration: none;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+
+.nav a:hover { color: var(--fg) }
+.nav a.a { color: var(--ac); border-bottom-color: var(--ac); font-weight: 600 }
+
+.c {
+  background: var(--bg2);
+  border: 1px solid var(--ln);
+  border-radius: var(--r);
+  padding: 12px;
+  margin-bottom: 1rem;
+}
+
+.c > h2 { font-size: 1rem; font-weight: 600; margin-bottom: 10px }
+
+.ft {
+  color: var(--fg2);
+  font-size: .8rem;
+  text-align: center;
+  padding: 1rem 0;
+}
+
+.ft a { color: var(--ac) }
+
+/* Forms -------------------------------------------------------------- */
+
+/* Two columns on wide screens, stacked on narrow ones — the single rule that
+   replaces the old right-aligned label tables. */
+.f { display: grid; grid-template-columns: 180px 1fr; gap: 8px 12px; align-items: center }
+.f > label { color: var(--fg2); font-size: .9rem }
+.f > .full { grid-column: 1 / -1 }
+.f > .hint { grid-column: 2; color: var(--fg2); font-size: .8rem; margin-top: -4px }
+
+input, select, textarea {
+  font: inherit;
+  width: 100%;
+  padding: 7px 9px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--ln);
+  border-radius: var(--r);
+}
+
+input[type=checkbox], input[type=radio] { width: auto; margin-right: 6px }
+input::placeholder { color: var(--fg2); opacity: .75 }
+:focus-visible { outline: 2px solid var(--ac); outline-offset: 1px }
+
+/* Buttons ------------------------------------------------------------ */
+
+.b {
+  font: inherit;
+  font-weight: 500;
+  display: inline-block;
+  padding: 8px 16px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--ln);
+  border-radius: var(--r);
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+}
+
+.b:hover { border-color: var(--ac); color: var(--ac) }
+.b.p { background: var(--ac); border-color: var(--ac); color: var(--acf) }
+.b.p:hover { opacity: .9; color: var(--acf) }
+.b.d { color: var(--er); border-color: var(--ln) }
+.b.d:hover { border-color: var(--er) }
+.b.s { padding: 4px 10px; font-size: .85rem }
+.b:disabled { opacity: .5; cursor: default }
+
+/* Tables ------------------------------------------------------------- */
+
+/* Wide tables scroll inside their own wrapper. The page itself never scrolls
+   sideways, and pinch-zoom stays available because no viewport locks it. */
+.tw { overflow-x: auto; margin-bottom: 10px }
+.t { width: 100%; border-collapse: collapse; font-size: .9rem }
+/* Scroll rather than squeeze: without this the columns compress and every cell
+   wraps onto two lines long before the wrapper ever scrolls. */
+.tw > .t { min-width: max-content }
+.t th, .t td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--ln) }
+.t th { color: var(--fg2); font-size: .8rem; font-weight: 600; white-space: nowrap }
+.t tr:last-child td { border-bottom: 0 }
+.t td.n { color: var(--fg2) }
+
+/* Key/value readouts reuse .t with the label column muted. */
+.t.kv td:first-child { color: var(--fg2); width: 40% }
+
+/* Status and messages ------------------------------------------------ */
+
+.bd { font-size: .85rem; font-weight: 500 }
+.bd.ok { color: var(--ok) }
+.bd.wn { color: var(--wn) }
+.bd.er { color: var(--er) }
+
+.al {
+  border: 1px solid var(--ln);
+  border-left: 3px solid var(--ac);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  margin-bottom: 1rem;
+  background: var(--bg2);
+}
+
+.al.er { border-left-color: var(--er) }
+.al.wn { border-left-color: var(--wn) }
+.al.ok { border-left-color: var(--ok) }
+
+/* Collapsible sections ----------------------------------------------- */
+
+details { border-top: 1px solid var(--ln) }
+details:first-of-type { border-top: 0 }
+summary { padding: 10px 0; font-weight: 600; cursor: pointer }
+details > :last-child { padding-bottom: 12px }
+
+/* Narrow screens ------------------------------------------------------ */
+
+@media (max-width: 640px) {
+  .f { grid-template-columns: 1fr; gap: 4px }
+  .f > label { margin-top: 6px }
+  .f > .hint { grid-column: 1 }
+  .hd h1 { font-size: 1.1rem }
+}

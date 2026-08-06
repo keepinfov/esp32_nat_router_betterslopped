@@ -3,9 +3,9 @@
 
 #if !CONFIG_ETH_UPLINK
 /* Getting Started Page */
-#define SETUP_CHUNK_HEAD "<html>\
+#define SETUP_CHUNK_HEAD "<!DOCTYPE html><html lang=en>\
 <head>\
-<meta name='viewport' content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0'>\
+<meta name='viewport' content='width=device-width, initial-scale=1'>\
 <meta charset='UTF-8'>\
 <title>Getting Started</title>\
 <link rel='icon' href='favicon.png'>\
