@@ -246,8 +246,8 @@ sits, so the setting you came for is one click away instead of one scroll:
 |---|---|
 | <img src="docs/img/ui-config-light.png" alt="Configuration page, light theme"> | <img src="docs/img/ui-config-dark.png" alt="Configuration page, dark theme"> |
 
-Firewall rules read as endpoints rather than as a grid of six address and port
-columns:
+Firewall rules read as endpoints — `10.0.0.0/8:any → any:443` — instead of
+splitting each address away from its port into a column of its own:
 
 <img src="docs/img/ui-firewall-dark.png" alt="Firewall page">
 
@@ -283,22 +283,20 @@ network:
   password or the MQTT credential.
 - Passwords, the WireGuard private key and the pre-shared key no longer appear
   in the console log.
-
 - Values that come out of stored configuration — the hostname, the DNS server,
   the WireGuard peer key and endpoint, a DHCP reservation's name — are escaped
   on the way into the page. A restored backup could previously put markup in
   any of them.
-- The "EAP method" dropdown is gone. It stored and displayed a value that was
-  never passed to the Wi-Fi stack, which negotiates the method with the server
-  itself; the control could not affect anything.
-
 - Changing a setting is a POST. It used to be a GET, which meant any page you
   happened to be visiting could change one: an
   `<img src="http://192.168.4.1/config?reset=1">` on some unrelated site is
   enough, because your browser attaches the session cookie without asking and
   a GET carries no `Origin` header to reject it by. Every form and every
-  Delete button posts now, and the request's origin is checked before
-  anything is written.
+  Delete button posts now, and the request's origin is checked before anything
+  is written.
+- The "EAP method" dropdown is gone. It stored and displayed a value that was
+  never passed to the Wi-Fi stack, which negotiates the method with the server
+  itself; the control could not affect anything.
 
 ## Licence
 
