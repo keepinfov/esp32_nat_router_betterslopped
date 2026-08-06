@@ -3376,6 +3376,10 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
 
     char param1[64], param2[64];
 
+    /* Set when this request armed the restart timer, so the page can say so
+     * instead of a script guessing from the query string. */
+    bool restarting = false;
+
     /* Handle form submission */
     size_t buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
@@ -3437,6 +3441,7 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
                     argv[2] = param2;
                     set_sta(argc, argv);
                     esp_timer_start_once(restart_timer, 500000);
+                    restarting = true;
                 }
             }
 #endif
@@ -3462,7 +3467,9 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
     /* Render page */
     httpd_resp_set_type(req, "text/html");
 
-    SEND_CHUNK(req, SETUP_CHUNK_HEAD, HTTPD_RESP_USE_STRLEN);
+    send_page_head(req, "Getting Started", TAB_SETUP, is_web_password_set());
+
+    SEND_CHUNK(req, restarting ? SETUP_REBOOT_NOTE : SETUP_INTRO, HTTPD_RESP_USE_STRLEN);
 
     /* Escape into stack buffers so nothing heap-allocated is held across the
      * SEND_CHUNK calls below (a bail-out on a dead client returns immediately). */
@@ -3470,18 +3477,14 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
     html_escape_to(safe_ap_ssid, sizeof(safe_ap_ssid), ap_ssid);
 
     /* Sized for the worst case once the two escaped SSID fields are fixed-size
-     * stack buffers (~1185 bytes); the default 1024 would risk truncation. */
-    char section[1280];
-#if CONFIG_ETH_UPLINK
-    snprintf(section, sizeof(section), SETUP_CHUNK_FORM,
-        safe_ap_ssid, "");
-#else
+     * stack buffers; the default 1024 would risk truncation. */
+    char section[1536];
     char safe_ssid[200];
     html_escape_to(safe_ssid, sizeof(safe_ssid), prefill_ssid[0] ? prefill_ssid : ssid);
-    snprintf(section, sizeof(section), SETUP_CHUNK_FORM,
-        safe_ap_ssid, safe_ssid);
-#endif
+    snprintf(section, sizeof(section), SETUP_CHUNK_FORM, safe_ap_ssid, safe_ssid);
     SEND_CHUNK(req, section, HTTPD_RESP_USE_STRLEN);
+
+    send_page_foot(req);
 
     SEND_CHUNK(req, NULL, 0);
     return ESP_OK;
