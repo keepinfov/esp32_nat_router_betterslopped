@@ -8,7 +8,9 @@
 
 #if !CONFIG_ETH_UPLINK
 
-#define SCAN_TABLE_OPEN "<div class=c><div class=tw><table class=t><thead><tr>" \
+/* class=r: below 640px the rows reflow into one compact block per network so
+ * nothing needs scrolling sideways on a phone. */
+#define SCAN_TABLE_OPEN "<div class=c><div class=tw><table class=\"t r\"><thead><tr>" \
     "<th>Network</th><th>Signal</th><th>Channel</th><th>Security</th>"
 
 #define SCAN_TABLE_ACTION_TH "<th></th>"

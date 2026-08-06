@@ -51,6 +51,12 @@ without one silently loses its overrides. Ethernet boards additionally take
   `/app.css`. Do not add `<style>` blocks to page templates.
 - Shared chrome comes from `send_page_head()` / `send_page_foot()`; a page
   emits only its own body.
+- Table classes: `.t` is any table, `.t.kv` a key/value readout, `.t.r` a
+  record list that reflows below 640px into one compact block per row — first
+  cell as the heading, the rest joined into one muted line. Mark the cell
+  holding a row's button `class=a` so it stays on its own line, right-aligned.
+  A reflowed table drops its column headings, so a value that is ambiguous
+  without one has to carry the word itself ("1284 hits", not "1284").
 - Templates are printf format strings. A fragment with no substitutions goes to
   `SEND_CHUNK` verbatim; only fragments with real conversions go through
   `snprintf`. That is what keeps doubled `%%` escapes out of the markup.

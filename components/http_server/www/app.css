@@ -156,7 +156,8 @@ input::placeholder { color: var(--fg2); opacity: .75 }
 .tw { overflow-x: auto; margin-bottom: 10px }
 .t { width: 100%; border-collapse: collapse; font-size: .9rem }
 /* Scroll rather than squeeze: without this the columns compress and every cell
-   wraps onto two lines long before the wrapper ever scrolls. */
+   wraps onto two lines long before the wrapper ever scrolls. Dropped again
+   below the reflow breakpoint, where rows stop being rows. */
 .tw > .t { min-width: max-content }
 .t th, .t td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--ln) }
 .t th { color: var(--fg2); font-size: .8rem; font-weight: 600; white-space: nowrap }
@@ -200,4 +201,31 @@ details > :last-child { padding-bottom: 12px }
   .f > label { margin-top: 6px }
   .f > .hint { grid-column: 1 }
   .hd h1 { font-size: 1.1rem }
+
+  /* Data tables stop being tables and become one compact block per record:
+     the identifying cell on its own line, the rest joined into a single muted
+     line, and the action right-aligned below. A phone shows every field
+     without scrolling sideways, which the max-content wrapper above cannot do
+     once a table has more than about four columns.
+
+     Column headings are dropped rather than repeated per cell: values here
+     read on their own (an SSID, a dBm figure, a channel), and carrying a label
+     for every cell would cost markup on every row instead of these few rules.
+     Where a value would be ambiguous the handler spells it out in the text
+     itself — "1284 hits", "192.168.4.5:22".
+
+     Opt-in via .r: key/value readouts are already two narrow columns and stay
+     real tables. Making the reflow the default and restoring them afterwards
+     meant every restoring rule had to out-specify the ones below, which is how
+     the value column silently ended up inline. */
+  .tw > .t { min-width: 0 }
+  .r thead { display: none }
+  .r, .r tbody, .r tr, .r td { display: block }
+  .r tr { padding: 8px 0; border-bottom: 1px solid var(--ln) }
+  .r tr:last-child { border-bottom: 0 }
+  .r td { padding: 0; border: 0 }
+  .r td:first-child { font-weight: 500 }
+  .r td:not(:first-child):not(.a) { display: inline; font-size: .85rem; color: var(--fg2) }
+  .r td:nth-child(n+3):not(.a)::before { content: " · " }
+  .r td.a { margin-top: 6px; text-align: right }
 }

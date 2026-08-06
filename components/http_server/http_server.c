@@ -3364,8 +3364,11 @@ static esp_err_t scan_get_handler(httpd_req_t *req)
                 char encoded_ssid[128];
                 char cell[192];
                 url_encode((const char *)ap_list[i].ssid, encoded_ssid, sizeof(encoded_ssid));
+                /* class=a marks the action cell so the narrow-screen reflow
+                 * keeps it on its own line instead of folding it into the
+                 * run-on detail line. */
                 n = snprintf(cell, sizeof(cell),
-                             "<td><a class=\"b s\" href=/setup?ssid=%s>Connect</a></td>",
+                             "<td class=a><a class=\"b s\" href=/setup?ssid=%s>Connect</a></td>",
                              encoded_ssid);
                 SCAN_CHUNK(cell, n);
             }
