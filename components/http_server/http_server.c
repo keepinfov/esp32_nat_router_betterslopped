@@ -69,6 +69,19 @@ static const char *TAG = "HTTPServer";
         } \
     } while (0)
 
+/* Stream a section that was just rendered into a stack buffer.
+ *
+ * snprintf() returns the length it *wanted* to write, not the length it wrote.
+ * Passing that straight to httpd_resp_send_chunk() would hand it a length past
+ * the end of the buffer the moment a section truncates — an escaped SSID and an
+ * escaped hostname in the same form are enough to get close.  Clamping here
+ * means the worst case is a short page, not a read out of bounds.
+ *
+ * buf must be an array, not a pointer: the clamp is sizeof(buf). */
+#define SEND_RENDERED(req, buf, len) \
+    SEND_CHUNK((req), (buf), \
+               (len) < (int)sizeof(buf) ? (len) : (int)sizeof(buf) - 1)
+
 /* Escape src into a fixed stack buffer (truncating if needed) and free the
  * heap copy from html_escape().  Page handlers use this so they never hold an
  * html_escape() allocation across a chunked SEND_CHUNK render. */
@@ -1602,7 +1615,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
             "style=display:none aria-hidden=true tabindex=-1>"
             "<label for=pw>Password</label>"
             "<input id=pw type=password name=login_password autocomplete=current-password>"
-            "<button class=\"b p\" type=submit style=grid-column:2>Sign in</button>"
+            "<button class=\"b p act\" type=submit>Sign in</button>"
             "</form></div>", HTTPD_RESP_USE_STRLEN);
     }
 
@@ -1620,7 +1633,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
             "<label for=cp>Repeat</label>"
             "<input id=cp type=password name=confirm_password autocomplete=new-password>"
             "<p class=hint>Leave both empty to turn password protection off.</p>"
-            "<button class=\"b p\" type=submit style=grid-column:2>", HTTPD_RESP_USE_STRLEN);
+            "<button class=\"b p act\" type=submit>", HTTPD_RESP_USE_STRLEN);
         SEND_CHUNK(req, form_title, HTTPD_RESP_USE_STRLEN);
         SEND_CHUNK(req, "</button></form></div>", HTTPD_RESP_USE_STRLEN);
     }
@@ -1686,6 +1699,11 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 
     char*  buf;
     size_t buf_len;
+    /* Set by every branch below that queues a restart, so the rendered page can
+     * say so.  This used to be a script that matched the query string against a
+     * list of field names and replaced document.body when one hit — which meant
+     * the page claimed a reboot for any URL carrying, say, ?reset= . */
+    bool restarting = false;
 
     /* Read URL query string length and allocate memory for length + 1 */
     buf_len = httpd_req_get_url_query_len(req) + 1;
@@ -1701,6 +1719,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             char reset_param[16];
             if (httpd_query_key_value(buf, "reset", reset_param, sizeof(reset_param)) == ESP_OK) {
                 esp_timer_start_once(restart_timer, 500000);
+                restarting = true;
             }
 
             /* Handle Web UI bind interface settings */
@@ -1727,6 +1746,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     ESP_LOGI(TAG, "Web interface disabled. Use 'enable' command via serial to re-enable.");
                 }
                 esp_timer_start_once(restart_timer, 500000);
+                restarting = true;
             }
 
             char param2[64];
@@ -1866,6 +1886,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 #endif
 
                     esp_timer_start_once(restart_timer, 500000);
+                    restarting = true;
                 }
             }
 
@@ -1910,14 +1931,6 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 
                             // Save WPA2-Enterprise settings to NVS
                             {
-                                char eap_param[4] = "";
-                                int eap_val = 0;
-                                if (httpd_query_key_value(buf, "eap_method", eap_param, sizeof(eap_param)) == ESP_OK) {
-                                    eap_val = atoi(eap_param);
-                                }
-                                set_config_param_int("eap_method", eap_val);
-                                eap_method = eap_val;
-
                                 char phase2_param[4] = "";
                                 int phase2_val = 0;
                                 if (httpd_query_key_value(buf, "ttls_phase2", phase2_param, sizeof(phase2_param)) == ESP_OK) {
@@ -1980,6 +1993,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                             }
 
                             esp_timer_start_once(restart_timer, 500000);
+                            restarting = true;
                         }
                     }
                 }
@@ -2004,6 +2018,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                         argv[3] = param3;
                         set_sta_static(argc, argv);
                         esp_timer_start_once(restart_timer, 500000);
+                        restarting = true;
                     }
                 }
             }
@@ -2117,10 +2132,24 @@ static esp_err_t config_get_handler(httpd_req_t *req)
     char safe_ap_ssid[200];
     html_escape_to(safe_ap_ssid, sizeof(safe_ap_ssid), ap_ssid);
 
+    /* Addresses and the hostname are escaped too.  They look like they could
+     * not hold markup, but nothing on the way in guarantees that: a restored
+     * configuration file or a console command can put any bytes in these NVS
+     * strings, and they land inside value='...' below. */
+    char safe_hostname[200], safe_ap_dns[96];
+    html_escape_to(safe_hostname, sizeof(safe_hostname), hostname);
+    html_escape_to(safe_ap_dns, sizeof(safe_ap_dns), ap_dns);
+
+    char safe_static_ip[96], safe_subnet_mask[96], safe_gateway[96];
+    html_escape_to(safe_static_ip, sizeof(safe_static_ip), static_ip);
+    html_escape_to(safe_subnet_mask, sizeof(safe_subnet_mask), subnet_mask);
+    html_escape_to(safe_gateway, sizeof(safe_gateway), gateway_addr);
+
     // Get current AP IP address.  Copy into a stack buffer and free the heap
     // copy now, for the same reason as the escaped strings above.
-    char ap_ip_str[16] = "";
+    char safe_ap_ip[96];
     {
+        char ap_ip_str[64] = "";
         char *ap_ip_param = NULL;
         get_config_param_str("ap_ip", &ap_ip_param);
         if (ap_ip_param != NULL) {
@@ -2129,6 +2158,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         } else {
             snprintf(ap_ip_str, sizeof(ap_ip_str), IPSTR, IP2STR((esp_ip4_addr_t *)&my_ap_ip));
         }
+        html_escape_to(safe_ap_ip, sizeof(safe_ap_ip), ap_ip_str);
     }
 
     // Get MAC addresses as strings
@@ -2152,149 +2182,128 @@ static esp_err_t config_get_handler(httpd_req_t *req)
     remote_console_get_config(&rc_config);
     remote_console_get_status(&rc_status);
 
-    const char* ap_en_checked = ap_disabled ? "" : "checked";
-    const char* ap_open_checked = (strlen(ap_passwd) == 0) ? "checked" : "";
-    const char* ap_hidden_checked = ap_ssid_hidden ? "checked" : "";
-    const char* rc_enabled_checked = rc_config.enabled ? "checked" : "";
-    const char* rc_disabled_checked = rc_config.enabled ? "" : "checked";
+    /* Reusable buffer for building sections.  Stack, not heap: a SEND_CHUNK
+     * bail-out on a dead client returns immediately.  Sized for the largest
+     * section (the access point form) once its escaped SSID and hostname are
+     * accounted for as fixed-size stack buffers. */
+    char section[2560];
+    int n;
 
-    const char* rc_status_color;
-    const char* rc_status_text;
-    const char* rc_kick_section = "";
-    char rc_kick_buf[200] = "";
+    httpd_resp_set_type(req, "text/html");
 
-    switch (rc_status.state) {
-        case RC_STATE_DISABLED:
-            rc_status_color = "#888";
-            rc_status_text = "Disabled";
-            break;
-        case RC_STATE_LISTENING:
-            rc_status_color = "#4caf50";
-            rc_status_text = "Listening";
-            break;
-        case RC_STATE_AUTH_WAIT:
-            rc_status_color = "#ffc107";
-            rc_status_text = "Authenticating...";
-            break;
-        case RC_STATE_ACTIVE:
-            rc_status_color = "#00d9ff";
-            rc_status_text = rc_status.client_ip;
-            snprintf(rc_kick_buf, sizeof(rc_kick_buf),
-                " <a href='/config?rc_kick=1' style='margin-left: 0.5rem; padding: 0.2rem 0.6rem; background: #f44336; color: #fff; border-radius: 4px; text-decoration: none; font-size: 0.8rem;'>Kick</a>");
-            rc_kick_section = rc_kick_buf;
-            break;
-        default:
-            rc_status_color = "#888";
-            rc_status_text = "Unknown";
-            break;
+    if (send_page_head(req, "Configuration", TAB_CONFIG,
+                       session_active && password_protection_enabled) != ESP_OK) {
+        return ESP_FAIL;
     }
 
-    const char* rc_ap_chk = (rc_config.bind & RC_BIND_AP) ? "checked" : "";
-    const char* rc_sta_chk = (rc_config.bind & RC_BIND_STA) ? "checked" : "";
-    const char* rc_vpn_chk = (rc_config.bind & RC_BIND_VPN) ? "checked" : "";
-
-    // PCAP state
-    pcap_capture_mode_t pcap_mode = pcap_get_mode();
-    const char* pcap_mode_off_sel = (pcap_mode == PCAP_MODE_OFF) ? "selected" : "";
-    const char* pcap_mode_acl_sel = (pcap_mode == PCAP_MODE_ACL_MONITOR) ? "selected" : "";
-    const char* pcap_mode_promisc_sel = (pcap_mode == PCAP_MODE_PROMISCUOUS) ? "selected" : "";
-    bool pcap_client = pcap_client_connected();
-    const char* pcap_client_color = pcap_client ? "#4caf50" : "#888";
-    const char* pcap_client_text = pcap_client ? "Connected" : "Not connected";
-    uint32_t pcap_captured = pcap_get_captured_count();
-    uint32_t pcap_dropped = pcap_get_dropped_count();
-    int current_snaplen = pcap_get_snaplen();
-
-    /* Reusable buffer for building sections.  Sized for the largest chunk
-     * (STA settings): its worst case is ~2571 bytes once the escaped SSID /
-     * enterprise identity fields are accounted for as fixed-size stack buffers. */
-    char section[2816];
-
-    /* --- Begin chunked response --- */
-
-    /* Chunk 1: Page header (styles) */
-    SEND_CHUNK(req, CONFIG_CHUNK_HEAD, HTTPD_RESP_USE_STRLEN);
-
-    /* Chunk 2: Logout button (if authenticated) */
-    if (session_active && password_protection_enabled) {
-        SEND_CHUNK(req,
-            "<a href='/?logout=1' style='padding: 0.4rem 1rem; background: rgba(255,82,82,0.15); color: #ff5252; border: 1px solid #ff5252; border-radius: 6px; text-decoration: none; font-size: 0.85rem; font-weight: 500;'>Logout</a>",
-            HTTPD_RESP_USE_STRLEN);
+    if (restarting) {
+        SEND_CHUNK(req, CONFIG_REBOOT_NOTE, HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Chunk 3: JavaScript */
-    SEND_CHUNK(req, CONFIG_CHUNK_SCRIPT, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, CONFIG_OPEN, HTTPD_RESP_USE_STRLEN);
 
-    /* Chunk 4: AP Settings */
-    const char* auth_sel0 = (ap_authmode == 0) ? "selected" : "";
-    const char* auth_sel1 = (ap_authmode == 1) ? "selected" : "";
-    const char* auth_sel2 = (ap_authmode == 2) ? "selected" : "";
-    snprintf(section, sizeof(section), CONFIG_CHUNK_AP,
-        safe_ap_ssid, ap_ip_str, hostname ? hostname : "", ap_dns ? ap_dns : "", ap_mac_str,
+    /* Access point --------------------------------------------------------- */
+
+    n = snprintf(section, sizeof(section), CONFIG_AP,
+        safe_ap_ssid, safe_ap_ip, safe_hostname, safe_ap_dns, ap_mac_str,
 #if CONFIG_ETH_UPLINK
         (int)ap_channel,
 #endif
-        auth_sel0, auth_sel1, auth_sel2,
+        ap_authmode == 0 ? "selected" : "",
+        ap_authmode == 1 ? "selected" : "",
+        ap_authmode == 2 ? "selected" : "",
         ap_nat_enabled ? "checked" : "",
-        ap_en_checked, ap_open_checked, ap_hidden_checked);
-    SEND_CHUNK(req, section, HTTPD_RESP_USE_STRLEN);
+        ap_disabled ? "" : "checked",
+        (strlen(ap_passwd) == 0) ? "checked" : "",
+        ap_ssid_hidden ? "checked" : "");
+    SEND_RENDERED(req, section, n);
+
+    /* Uplink --------------------------------------------------------------- */
 
 #if CONFIG_ETH_UPLINK
-    /* Chunk 5: ETH info */
-    SEND_CHUNK(req,
-        "<h2>Uplink Settings</h2><table><tr><td>Mode:</td><td>Ethernet (LAN8720)</td></tr></table>",
-        HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, CONFIG_STA, HTTPD_RESP_USE_STRLEN);
 #else
-    /* Chunk 5: STA Settings */
-    snprintf(section, sizeof(section), CONFIG_CHUNK_STA,
+    n = snprintf(section, sizeof(section), CONFIG_STA,
         safe_ssid,
 #if WIFI_HAS_5GHZ
         sta_band == STA_BAND_AUTO ? "selected" : "",
         sta_band == STA_BAND_2G ? "selected" : "",
         sta_band == STA_BAND_5G ? "selected" : "",
 #endif
+        sta_mac_str,
         safe_ent_username, safe_ent_identity,
-        eap_method == 0 ? "selected" : "", eap_method == 1 ? "selected" : "",
-        eap_method == 2 ? "selected" : "", eap_method == 3 ? "selected" : "",
         ttls_phase2 == 0 ? "selected" : "", ttls_phase2 == 1 ? "selected" : "",
         ttls_phase2 == 2 ? "selected" : "", ttls_phase2 == 3 ? "selected" : "",
-        use_cert_bundle ? "checked" : "", disable_time_check ? "checked" : "",
-        sta_mac_str);
-    SEND_CHUNK(req, section, HTTPD_RESP_USE_STRLEN);
+        use_cert_bundle ? "checked" : "", disable_time_check ? "checked" : "");
+    SEND_RENDERED(req, section, n);
 #endif
 
-    /* Chunk 6: Static IP Settings */
-    snprintf(section, sizeof(section), CONFIG_CHUNK_STATIC,
-        static_ip, subnet_mask, gateway_addr);
-    SEND_CHUNK(req, section, HTTPD_RESP_USE_STRLEN);
+    n = snprintf(section, sizeof(section), CONFIG_STATIC,
+                 safe_static_ip, safe_subnet_mask, safe_gateway);
+    SEND_RENDERED(req, section, n);
 
-    /* Chunk 7: Remote Console */
-    snprintf(section, sizeof(section), CONFIG_CHUNK_RC,
-        rc_enabled_checked, rc_disabled_checked,
-        rc_status_color, rc_status_text, rc_kick_section,
-        rc_config.port,
-        rc_ap_chk, rc_sta_chk, rc_vpn_chk,
-        (unsigned long)rc_config.idle_timeout_sec);
-    SEND_CHUNK(req, section, HTTPD_RESP_USE_STRLEN);
+    /* Remote console ------------------------------------------------------- */
 
-    /* Chunk 8: PCAP */
-    char sta_ip_str[16];
     {
+        const char *rc_class, *rc_text;
+        /* Only an established session can be kicked, so the button exists only
+         * in that state; the format string takes an empty string otherwise. */
+        const char *rc_kick = "";
+        switch (rc_status.state) {
+            case RC_STATE_LISTENING:
+                rc_class = "bd ok"; rc_text = "Listening";
+                break;
+            case RC_STATE_AUTH_WAIT:
+                rc_class = "bd wn"; rc_text = "Authenticating";
+                break;
+            case RC_STATE_ACTIVE:
+                rc_class = "bd ok"; rc_text = rc_status.client_ip;
+                rc_kick = " <a href=/config?rc_kick=1 class=\"b s d\" "
+                          "data-c='Disconnect the console session?'>Disconnect</a>";
+                break;
+            case RC_STATE_DISABLED:
+                rc_class = "n"; rc_text = "Disabled";
+                break;
+            default:
+                rc_class = "n"; rc_text = "Unknown";
+                break;
+        }
+        n = snprintf(section, sizeof(section), CONFIG_RC,
+            rc_config.enabled ? "selected" : "",
+            rc_config.enabled ? "" : "selected",
+            rc_class, rc_text, rc_kick,
+            rc_config.port,
+            (rc_config.bind & RC_BIND_AP)  ? "checked" : "",
+            (rc_config.bind & RC_BIND_STA) ? "checked" : "",
+            (rc_config.bind & RC_BIND_VPN) ? "checked" : "",
+            (unsigned long)rc_config.idle_timeout_sec);
+        SEND_RENDERED(req, section, n);
+    }
+
+    /* Packet capture ------------------------------------------------------- */
+
+    {
+        pcap_capture_mode_t pcap_mode = pcap_get_mode();
+        bool pcap_client = pcap_client_connected();
+        char sta_ip_str[16];
         ip4_addr_t sta_addr;
         sta_addr.addr = my_ip;
         snprintf(sta_ip_str, sizeof(sta_ip_str), IPSTR, IP2STR(&sta_addr));
+
+        n = snprintf(section, sizeof(section), CONFIG_PCAP,
+            pcap_mode == PCAP_MODE_OFF ? "selected" : "",
+            pcap_mode == PCAP_MODE_ACL_MONITOR ? "selected" : "",
+            pcap_mode == PCAP_MODE_PROMISCUOUS ? "selected" : "",
+            pcap_client ? "bd ok" : "n",
+            pcap_client ? "Connected" : "Not connected",
+            (unsigned long)pcap_get_captured_count(),
+            (unsigned long)pcap_get_dropped_count(),
+            (int)pcap_get_snaplen(), sta_ip_str);
+        SEND_RENDERED(req, section, n);
     }
-    snprintf(section, sizeof(section), CONFIG_CHUNK_PCAP,
-        pcap_mode_off_sel, pcap_mode_acl_sel, pcap_mode_promisc_sel,
-        pcap_client_color, pcap_client_text,
-        (unsigned long)pcap_captured, (unsigned long)pcap_dropped,
-        current_snaplen, sta_ip_str);
-    SEND_CHUNK(req, section, HTTPD_RESP_USE_STRLEN);
 
-    /* Chunk 9: Device management heading */
-    SEND_CHUNK(req, CONFIG_CHUNK_TAIL, HTTPD_RESP_USE_STRLEN);
+    /* Firmware ------------------------------------------------------------- */
 
-    /* Chunk 9a: Dynamic OTA info (running partition, version, chip) */
     {
         esp_chip_info_t chip_info;
         esp_chip_info(&chip_info);
@@ -2312,32 +2321,28 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         }
         const esp_partition_t *running = esp_ota_get_running_partition();
         const esp_app_desc_t *app_desc = esp_app_get_description();
-        snprintf(section, sizeof(section),
-            "<table>"
-            "<tr><td>Running</td><td>%s</td></tr>"
-            "<tr><td>Chip</td><td>%s</td></tr>"
-            "<tr><td>Version</td><td>%s</td></tr>"
-            "<tr><td>Built</td><td>%s %s</td></tr>"
-            "</table>",
+        n = snprintf(section, sizeof(section), CONFIG_FIRMWARE,
             running ? running->label : "unknown",
             chip_model,
             app_desc ? app_desc->version : "unknown",
             app_desc ? app_desc->date : "", app_desc ? app_desc->time : "");
-        SEND_CHUNK(req, section, HTTPD_RESP_USE_STRLEN);
+        SEND_RENDERED(req, section, n);
     }
 
-    /* Chunk 9b: OTA upload form, config backup/restore, reboot */
-    SEND_CHUNK(req, CONFIG_CHUNK_TAIL2, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, CONFIG_BACKUP, HTTPD_RESP_USE_STRLEN);
 
-    /* Chunk 9c: Danger Zone (web bind + disable interface).
-     * Uses its own buffer — CONFIG_CHUNK_DANGER exceeds the shared section[2048]. */
-    {
-        char danger[2560];
-        snprintf(danger, sizeof(danger), CONFIG_CHUNK_DANGER,
-            (s_web_bind & RC_BIND_AP)  ? "checked" : "",
-            (s_web_bind & RC_BIND_STA) ? "checked" : "",
-            (s_web_bind & RC_BIND_VPN) ? "checked" : "");
-        SEND_CHUNK(req, danger, HTTPD_RESP_USE_STRLEN);
+    /* Reboot and access ---------------------------------------------------- */
+
+    n = snprintf(section, sizeof(section), CONFIG_DANGER,
+        (s_web_bind & RC_BIND_AP)  ? "checked" : "",
+        (s_web_bind & RC_BIND_STA) ? "checked" : "",
+        (s_web_bind & RC_BIND_VPN) ? "checked" : "");
+    SEND_RENDERED(req, section, n);
+
+    SEND_CHUNK(req, CONFIG_CLOSE, HTTPD_RESP_USE_STRLEN);
+
+    if (send_page_foot(req) != ESP_OK) {
+        return ESP_FAIL;
     }
 
     /* End chunked response */
@@ -2566,44 +2571,34 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
         free(buf);
     }
 
-    /* Reusable buffer for building individual rows */
-    char row[384];
+    /* Reusable buffers.  Stack, not heap: a SEND_CHUNK bail-out on a dead
+     * client returns immediately and would leak a heap allocation.  A row holds
+     * an escaped device name twice over (once in a cell, once in a data-*
+     * attribute), and html_escape() spends up to five bytes per character. */
+    char row[768];
+    char esc[DHCP_RESERVATION_NAME_LEN * 6];
+    int n;
 
-    /* --- Begin chunked response --- */
+    httpd_resp_set_type(req, "text/html");
 
-    /* Chunk 1: Page header (styles, scripts) */
-    SEND_CHUNK(req, MAPPINGS_CHUNK_HEAD, HTTPD_RESP_USE_STRLEN);
+    if (send_page_head(req, "Mappings", TAB_MAPPINGS,
+                       session_active && password_protection_enabled) != ESP_OK) {
+        return ESP_FAIL;
+    }
 
-    /* Chunk 2: Error modal (if any) */
     if (error_msg[0] != '\0') {
-        snprintf(row, sizeof(row),
-            "<div class='modal-overlay show' id='errorModal'>"
-            "<div class='modal-box'>"
-            "<h3>Error</h3>"
-            "<p>%s</p>"
-            "<button onclick=\"document.getElementById('errorModal').classList.remove('show'); history.replaceState(null, '', '/mappings');\">OK</button>"
-            "</div>"
-            "</div>",
-            error_msg);
-        SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+        n = snprintf(row, sizeof(row), MAPPINGS_ERROR, error_msg);
+        SEND_RENDERED(req, row, n);
     }
 
-    /* Chunk 3: Container start and header */
-    SEND_CHUNK(req, MAPPINGS_CHUNK_MID1, HTTPD_RESP_USE_STRLEN);
+    /* Connected clients ---------------------------------------------------- */
 
-    /* Chunk 4: Logout button (if authenticated) */
-    if (session_active && password_protection_enabled) {
-        SEND_CHUNK(req,
-            "<a href='/?logout=1' style='padding: 0.4rem 1rem; background: rgba(255,82,82,0.15); color: #ff5252; border: 1px solid #ff5252; border-radius: 6px; text-decoration: none; font-size: 0.85rem; font-weight: 500;'>Logout</a>",
-            HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, MAPPINGS_CLIENTS_OPEN, HTTPD_RESP_USE_STRLEN);
+    if (client_stats_enabled) {
+        SEND_CHUNK(req, MAPPINGS_CLIENTS_TRAFFIC, HTTPD_RESP_USE_STRLEN);
     }
+    SEND_CHUNK(req, MAPPINGS_CLIENTS_HEAD_END, HTTPD_RESP_USE_STRLEN);
 
-    /* Chunk 5: Connected clients table header */
-    SEND_CHUNK(req,
-        client_stats_enabled ? MAPPINGS_CHUNK_MID2 : MAPPINGS_CHUNK_MID2_NOSTATS,
-        HTTPD_RESP_USE_STRLEN);
-
-    /* Chunk 6: Stream connected clients rows */
     #define MAX_DISPLAYED_CLIENTS 8
     connected_client_t clients[MAX_DISPLAYED_CLIENTS];
     int client_count = get_connected_clients(clients, MAX_DISPLAYED_CLIENTS);
@@ -2613,198 +2608,168 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
     client_stats_entry_t stats[CLIENT_STATS_MAX];
     int stats_count = client_stats_enabled ? client_stats_get_all(stats, CLIENT_STATS_MAX) : 0;
 
-    if (client_count > 0) {
-        for (int i = 0; i < client_count; i++) {
-            char ip_str[16] = "-";
-            if (clients[i].has_ip) {
-                esp_ip4_addr_t addr;
-                addr.addr = clients[i].ip;
-                snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&addr));
-            }
-
-            char mac_str[18];
-            snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                clients[i].mac[0], clients[i].mac[1],
-                clients[i].mac[2], clients[i].mac[3],
-                clients[i].mac[4], clients[i].mac[5]);
-
-            /* This lands inside onclick="fillDhcpForm('...')" — an HTML
-             * attribute wrapping a JavaScript string literal, which needs two
-             * layers of escaping to get right. Restricting the value to a safe
-             * alphabet sidesteps both; device names are hostnames, so nothing
-             * legitimate is lost. Escaping only the apostrophe, as this did
-             * before, left <, ", and backslash to break out. */
-            char js_name[DHCP_RESERVATION_NAME_LEN];
-            const char *src_name = clients[i].name[0] ? clients[i].name : "";
-            int j = 0;
-            for (int k = 0; src_name[k] && j < (int)sizeof(js_name) - 1; k++) {
-                char c = src_name[k];
-                bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                          (c >= '0' && c <= '9') || c == '-' || c == '.' ||
-                          c == '_' || c == ' ';
-                js_name[j++] = ok ? c : '_';
-            }
-            js_name[j] = '\0';
-
-            if (client_stats_enabled) {
-                /* Find matching traffic stats by MAC */
-                char traffic_str[32] = "-";
-                for (int s = 0; s < stats_count; s++) {
-                    if (memcmp(stats[s].mac, clients[i].mac, 6) == 0) {
-                        char tx_buf[12], rx_buf[12];
-                        format_bytes_human(stats[s].bytes_sent, tx_buf, sizeof(tx_buf));
-                        format_bytes_human(stats[s].bytes_received, rx_buf, sizeof(rx_buf));
-                        snprintf(traffic_str, sizeof(traffic_str), "%s / %s", tx_buf, rx_buf);
-                        break;
-                    }
-                }
-                snprintf(row, sizeof(row),
-                    "<tr>"
-                    "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
-                    "<td><button type='button' class='select-button' onclick=\"fillDhcpForm('%s','%s','%s')\">Select</button></td>"
-                    "</tr>",
-                    mac_str, ip_str, js_name[0] ? js_name : "-", traffic_str,
-                    mac_str, clients[i].has_ip ? ip_str : "", js_name);
-            } else {
-                snprintf(row, sizeof(row),
-                    "<tr>"
-                    "<td>%s</td><td>%s</td><td>%s</td>"
-                    "<td><button type='button' class='select-button' onclick=\"fillDhcpForm('%s','%s','%s')\">Select</button></td>"
-                    "</tr>",
-                    mac_str, ip_str, js_name[0] ? js_name : "-",
-                    mac_str, clients[i].has_ip ? ip_str : "", js_name);
-            }
-            SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    for (int i = 0; i < client_count; i++) {
+        char ip_str[16] = "";
+        if (clients[i].has_ip) {
+            esp_ip4_addr_t addr;
+            addr.addr = clients[i].ip;
+            snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&addr));
         }
-    } else {
-        SEND_CHUNK(req,
-            client_stats_enabled
-                ? "<tr><td colspan='5' style='text-align:center; color:#888;'>No clients connected</td></tr>"
-                : "<tr><td colspan='4' style='text-align:center; color:#888;'>No clients connected</td></tr>",
-            HTTPD_RESP_USE_STRLEN);
+
+        char mac_str[18];
+        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+            clients[i].mac[0], clients[i].mac[1],
+            clients[i].mac[2], clients[i].mac[3],
+            clients[i].mac[4], clients[i].mac[5]);
+
+        /* The name is a client-supplied hostname or an operator-supplied
+         * reservation label; it goes into a cell and into a data-* attribute,
+         * both of which the same escaping covers. */
+        html_escape_to(esc, sizeof(esc), clients[i].name);
+
+        char traffic[48] = "";
+        if (client_stats_enabled) {
+            for (int s = 0; s < stats_count; s++) {
+                if (memcmp(stats[s].mac, clients[i].mac, 6) == 0) {
+                    char tx_buf[12], rx_buf[12];
+                    format_bytes_human(stats[s].bytes_sent, tx_buf, sizeof(tx_buf));
+                    format_bytes_human(stats[s].bytes_received, rx_buf, sizeof(rx_buf));
+                    /* "up/down" rather than a bare pair: the column heading is
+                     * dropped when the table reflows on a phone. */
+                    snprintf(traffic, sizeof(traffic),
+                             "<td>%s up / %s down</td>", tx_buf, rx_buf);
+                    break;
+                }
+            }
+            if (traffic[0] == '\0') {
+                strcpy(traffic, "<td class=n>no traffic</td>");
+            }
+        }
+
+        n = snprintf(row, sizeof(row),
+            "<tr><td>%s</td><td>%s</td><td>%s</td>%s"
+            "<td class=a><button type=button class=\"b s\" data-m='%s' "
+            "data-i='%s' data-n='%s'>Reserve</button></td></tr>",
+            mac_str,
+            clients[i].has_ip ? ip_str : "no lease",
+            esc[0] ? esc : "unnamed",
+            traffic,
+            mac_str, ip_str, esc);
+        SEND_RENDERED(req, row, n);
     }
 
-    /* Chunk 7: DHCP reservations heading */
-    SEND_CHUNK(req, MAPPINGS_CHUNK_MID3, HTTPD_RESP_USE_STRLEN);
+    if (client_count == 0) {
+        n = snprintf(row, sizeof(row), MAPPINGS_CLIENTS_EMPTY,
+                     client_stats_enabled ? 5 : 4);
+        SEND_RENDERED(req, row, n);
+    }
 
-    /* DHCP Pool info */
+    SEND_CHUNK(req, MAPPINGS_TABLE_CLOSE, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, MAPPINGS_CARD_CLOSE, HTTPD_RESP_USE_STRLEN);
+
+    /* DHCP reservations ---------------------------------------------------- */
+
     {
         uint32_t start_ip, end_ip;
         get_dhcp_pool_range(my_ap_ip, &start_ip, &end_ip);
         esp_ip4_addr_t start_addr, end_addr;
         start_addr.addr = start_ip;
         end_addr.addr = end_ip;
-        snprintf(row, sizeof(row),
-                 "<small style='color:#888;'>Pool: " IPSTR " - " IPSTR "</small>",
-                 IP2STR(&start_addr), IP2STR(&end_addr));
-        SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+        char first[16], last[16];
+        snprintf(first, sizeof(first), IPSTR, IP2STR(&start_addr));
+        snprintf(last, sizeof(last), IPSTR, IP2STR(&end_addr));
+        n = snprintf(row, sizeof(row), MAPPINGS_DHCP_OPEN, first, last);
+        SEND_RENDERED(req, row, n);
     }
 
-    /* DHCP reservations table header */
-    SEND_CHUNK(req, MAPPINGS_CHUNK_MID3B, HTTPD_RESP_USE_STRLEN);
-
-    /* Chunk 8: Stream DHCP reservation rows */
     bool has_reservations = false;
     for (int i = 0; i < MAX_DHCP_RESERVATIONS; i++) {
-        if (dhcp_reservations[i].valid) {
-            has_reservations = true;
-            char ip_col[64];
-            if (dhcp_reservations[i].ip == 0) {
-                snprintf(ip_col, sizeof(ip_col), "<span style='color:#ff5252;font-weight:bold;'>BLOCKED</span>");
-            } else {
-                esp_ip4_addr_t addr;
-                addr.addr = dhcp_reservations[i].ip;
-                snprintf(ip_col, sizeof(ip_col), IPSTR, IP2STR(&addr));
-            }
+        if (!dhcp_reservations[i].valid) continue;
+        has_reservations = true;
 
-            snprintf(row, sizeof(row),
-                "<tr>"
-                "<td>%02X:%02X:%02X:%02X:%02X:%02X</td>"
-                "<td>%s</td>"
-                "<td>%s</td>"
-                "<td><a href='/mappings?del_dhcp_mac=%02X:%02X:%02X:%02X:%02X:%02X' class='red-button'>Delete</a></td>"
-                "</tr>",
-                dhcp_reservations[i].mac[0], dhcp_reservations[i].mac[1],
-                dhcp_reservations[i].mac[2], dhcp_reservations[i].mac[3],
-                dhcp_reservations[i].mac[4], dhcp_reservations[i].mac[5],
-                ip_col,
-                dhcp_reservations[i].name[0] ? dhcp_reservations[i].name : "-",
-                dhcp_reservations[i].mac[0], dhcp_reservations[i].mac[1],
-                dhcp_reservations[i].mac[2], dhcp_reservations[i].mac[3],
-                dhcp_reservations[i].mac[4], dhcp_reservations[i].mac[5]
-            );
-            SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+        /* A reservation with no address is a block entry: the DHCP server
+         * refuses that MAC a lease rather than pinning it to an IP. */
+        char ip_col[64];
+        if (dhcp_reservations[i].ip == 0) {
+            strcpy(ip_col, "<span class=\"bd er\">blocked</span>");
+        } else {
+            esp_ip4_addr_t addr;
+            addr.addr = dhcp_reservations[i].ip;
+            snprintf(ip_col, sizeof(ip_col), IPSTR, IP2STR(&addr));
         }
+
+        char mac_str[18];
+        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 dhcp_reservations[i].mac[0], dhcp_reservations[i].mac[1],
+                 dhcp_reservations[i].mac[2], dhcp_reservations[i].mac[3],
+                 dhcp_reservations[i].mac[4], dhcp_reservations[i].mac[5]);
+
+        html_escape_to(esc, sizeof(esc), dhcp_reservations[i].name);
+
+        n = snprintf(row, sizeof(row),
+            "<tr><td>%s</td><td>%s</td><td>%s</td>"
+            "<td class=a><a href='/mappings?del_dhcp_mac=%s' class=\"b s d\" "
+            "data-c='Delete this reservation?'>Delete</a></td></tr>",
+            mac_str, ip_col, esc[0] ? esc : "unnamed", mac_str);
+        SEND_RENDERED(req, row, n);
     }
 
     if (!has_reservations) {
-        SEND_CHUNK(req,
-            "<tr><td colspan='4' style='text-align:center; color:#888;'>No DHCP reservations configured</td></tr>",
-            HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, MAPPINGS_DHCP_EMPTY, HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Chunk 9: DHCP reservation form */
-    SEND_CHUNK(req, MAPPINGS_CHUNK_MID4, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, MAPPINGS_TABLE_CLOSE, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, MAPPINGS_CARD_CLOSE, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, MAPPINGS_DHCP_FORM, HTTPD_RESP_USE_STRLEN);
 
-    /* Chunk 10: Port forwarding section (hidden when NAT is disabled) */
+    /* Port forwarding ------------------------------------------------------ */
+
     if (ap_nat_enabled) {
-        SEND_CHUNK(req, MAPPINGS_CHUNK_PORTFWD_HEAD, HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, MAPPINGS_PORTFWD_OPEN, HTTPD_RESP_USE_STRLEN);
 
         bool has_mappings = false;
         for (int i = 0; i < IP_PORTMAP_MAX; i++) {
-            if (portmap_tab[i].valid) {
-                has_mappings = true;
+            if (!portmap_tab[i].valid) continue;
+            has_mappings = true;
 
-                const char *name = lookup_device_name_by_ip(portmap_tab[i].daddr);
-                char ip_or_name[DHCP_RESERVATION_NAME_LEN];
-                if (name) {
-                    snprintf(ip_or_name, sizeof(ip_or_name), "%s", name);
-                } else {
-                    esp_ip4_addr_t addr;
-                    addr.addr = portmap_tab[i].daddr;
-                    snprintf(ip_or_name, sizeof(ip_or_name), IPSTR, IP2STR(&addr));
-                }
-
-                snprintf(row, sizeof(row),
-                    "<tr>"
-                    "<td>%s</td>"
-                    "<td>%s</td>"
-                    "<td>%d</td>"
-                    "<td>%s</td>"
-                    "<td>%d</td>"
-                    "<td><a href='/mappings?del_proto=%s&del_port=%d' class='red-button'>Delete</a></td>"
-                    "</tr>",
-#if CONFIG_ETH_UPLINK
-                    portmap_tab[i].iface == 1 ? "VPN" : "ETH",
-#else
-                    portmap_tab[i].iface == 1 ? "VPN" : "STA",
-#endif
-                    portmap_tab[i].proto == PROTO_TCP ? "TCP" : "UDP",
-                    portmap_tab[i].mport,
-                    ip_or_name,
-                    portmap_tab[i].dport,
-                    portmap_tab[i].proto == PROTO_TCP ? "TCP" : "UDP",
-                    portmap_tab[i].mport
-                );
-                SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+            const char *name = lookup_device_name_by_ip(portmap_tab[i].daddr);
+            char ip_or_name[DHCP_RESERVATION_NAME_LEN];
+            if (name) {
+                snprintf(ip_or_name, sizeof(ip_or_name), "%s", name);
+            } else {
+                esp_ip4_addr_t addr;
+                addr.addr = portmap_tab[i].daddr;
+                snprintf(ip_or_name, sizeof(ip_or_name), IPSTR, IP2STR(&addr));
             }
+            html_escape_to(esc, sizeof(esc), ip_or_name);
+
+            const char *proto = portmap_tab[i].proto == PROTO_TCP ? "TCP" : "UDP";
+
+            n = snprintf(row, sizeof(row),
+                "<tr><td>%s %u</td><td>%s:%u</td><td>%s</td>"
+                "<td class=a><a href='/mappings?del_proto=%s&amp;del_port=%u' "
+                "class=\"b s d\" data-c='Delete this forward?'>Delete</a></td></tr>",
+                proto, (unsigned)portmap_tab[i].mport,
+                esc, (unsigned)portmap_tab[i].dport,
+                portmap_tab[i].iface == 1 ? "VPN" : PORTMAP_IFACE_WAN,
+                proto, (unsigned)portmap_tab[i].mport);
+            SEND_RENDERED(req, row, n);
         }
 
         if (!has_mappings) {
-            SEND_CHUNK(req,
-                "<tr><td colspan='6' style='text-align:center; color:#888;'>No port mappings configured</td></tr>",
-                HTTPD_RESP_USE_STRLEN);
+            SEND_CHUNK(req, MAPPINGS_PORTFWD_EMPTY, HTTPD_RESP_USE_STRLEN);
         }
 
-        SEND_CHUNK(req, MAPPINGS_CHUNK_PORTFWD_TAIL, HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, MAPPINGS_TABLE_CLOSE, HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, MAPPINGS_CARD_CLOSE, HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, MAPPINGS_PORTFWD_FORM, HTTPD_RESP_USE_STRLEN);
     } else {
-        SEND_CHUNK(req,
-            "<div class='section'><p style='color:#888; padding: 0.5rem 0;'>Port forwarding is not available in routed mode (NAT disabled).</p></div>",
-            HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, MAPPINGS_PORTFWD_OFF, HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Chunk 11: Page footer */
-    SEND_CHUNK(req, MAPPINGS_CHUNK_PAGE_FOOTER, HTTPD_RESP_USE_STRLEN);
+    if (send_page_foot(req) != ESP_OK) {
+        return ESP_FAIL;
+    }
 
     /* End chunked response */
     SEND_CHUNK(req, NULL, 0);
@@ -2993,47 +2958,31 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Reusable buffer for building individual elements */
-    char row[384];
+    /* Reusable buffer for building individual elements. Stack, not heap: a
+     * SEND_CHUNK bail-out on a dead client returns immediately.  Sized for a
+     * rule row holding two fully escaped device names (31 characters each, six
+     * bytes apiece in the worst case) plus its markup. */
+    char row[768];
+    int n;
 
-    /* --- Begin chunked response --- */
+    httpd_resp_set_type(req, "text/html");
 
-    /* Chunk 1: Page header (styles) */
-    SEND_CHUNK(req, FIREWALL_CHUNK_HEAD, HTTPD_RESP_USE_STRLEN);
+    if (send_page_head(req, "Firewall", TAB_FIREWALL,
+                       session_active && password_protection_enabled) != ESP_OK) {
+        return ESP_FAIL;
+    }
 
-    /* Chunk 2: Error modal (if any) */
     if (error_msg[0] != '\0') {
-        snprintf(row, sizeof(row),
-            "<div class='modal-overlay show' id='errorModal'>"
-            "<div class='modal-box'>"
-            "<h3>Error</h3>"
-            "<p>%s</p>"
-            "<button onclick=\"document.getElementById('errorModal').classList.remove('show'); history.replaceState(null, '', '/firewall');\">OK</button>"
-            "</div>"
-            "</div>",
-            error_msg);
-        SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+        n = snprintf(row, sizeof(row), FIREWALL_ERROR, error_msg);
+        SEND_RENDERED(req, row, n);
     }
 
-    /* Chunk 3: Container start and header */
-    SEND_CHUNK(req, FIREWALL_CHUNK_MID1, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, FIREWALL_INTRO, HTTPD_RESP_USE_STRLEN);
 
-    /* Chunk 4: Logout button (if authenticated) */
-    if (session_active && password_protection_enabled) {
-        SEND_CHUNK(req,
-            "<a href='/?logout=1' style='padding: 0.4rem 1rem; background: rgba(255,82,82,0.15); color: #ff5252; border: 1px solid #ff5252; border-radius: 6px; text-decoration: none; font-size: 0.85rem; font-weight: 500;'>Logout</a>",
-            HTTPD_RESP_USE_STRLEN);
-    }
-
-    /* Chunk 5: Description text */
-    SEND_CHUNK(req, FIREWALL_CHUNK_MID2, HTTPD_RESP_USE_STRLEN);
-
-    /* Chunk 6: Stream ACL sections.
-     * Copy data under lock then release before sending HTTP chunks,
-     * because httpd_resp_send_chunk can block on TCP and would deadlock
-     * with acl_check_packet holding the same lock in the netif hooks. */
+    /* One card per list.  The rules are copied out under the lock and the lock
+     * released before anything is sent: httpd_resp_send_chunk() can block on
+     * TCP, and acl_check_packet() takes the same lock from the netif hooks. */
     for (int list_no = 0; list_no < MAX_ACL_LISTS; list_no++) {
-        /* Snapshot ACL data under the lock */
         acl_entry_t rules_copy[MAX_ACL_ENTRIES];
         acl_stats_t stats_copy;
         const char* list_desc;
@@ -3046,112 +2995,100 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
         memcpy(&stats_copy, stats, sizeof(stats_copy));
         acl_unlock();
 
-        /* Section header with stats (no lock held) */
-        snprintf(row, sizeof(row),
-            "<div class='acl-section'>"
-            "<h3>%s</h3>"
-            "<div class='stats'>"
-            "<span class='allowed'>Allowed: %lu</span>"
-            "<span class='denied'>Denied: %lu</span>"
-            "<span>No match: %lu</span>"
-            "<a href='/firewall?clear_acl=%d' class='orange-button' style='float:right;'>Clear</a>"
-            "</div>",
-            list_desc,
-            (unsigned long)stats_copy.packets_allowed,
-            (unsigned long)stats_copy.packets_denied,
-            (unsigned long)stats_copy.packets_nomatch,
-            list_no);
-        SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+        n = snprintf(row, sizeof(row), FIREWALL_LIST_OPEN,
+                     list_desc, list_no,
+                     (unsigned long)stats_copy.packets_allowed,
+                     (unsigned long)stats_copy.packets_denied,
+                     (unsigned long)stats_copy.packets_nomatch);
+        SEND_RENDERED(req, row, n);
 
-        /* Rules table header */
-        SEND_CHUNK(req,
-            "<table class='data-table'>"
-            "<thead><tr>"
-            "<th>#</th><th>Proto</th><th>Source</th><th>SPort</th>"
-            "<th>Dest</th><th>DPort</th><th>Action</th><th>Hits</th><th></th>"
-            "</tr></thead><tbody>",
-            HTTPD_RESP_USE_STRLEN);
-
-        /* Stream rule rows from snapshot */
         int rule_count = 0;
         for (int i = 0; i < MAX_ACL_ENTRIES; i++) {
             if (!rules_copy[i].valid) continue;
             rule_count++;
 
-            /* Format protocol */
             const char *proto_str;
             switch (rules_copy[i].proto) {
-                case 0:  proto_str = "IP"; break;
-                case 1:  proto_str = "ICMP"; break;
-                case 6:  proto_str = "TCP"; break;
-                case 17: proto_str = "UDP"; break;
-                default: proto_str = "?"; break;
+                case ACL_PROTO_ICMP: proto_str = "ICMP"; break;
+                case ACL_PROTO_TCP:  proto_str = "TCP";  break;
+                case ACL_PROTO_UDP:  proto_str = "UDP";  break;
+                case ACL_PROTO_IP:   proto_str = "Any";  break;
+                default:             proto_str = "?";    break;
             }
 
-            /* Format IP addresses with device names for /32 */
+            /* A /32 rule is shown by device name when one is known, because
+             * that is how it was almost certainly entered.  The name comes from
+             * a DHCP reservation or a client's own DHCP option 12, so it is
+             * escaped on the way into the page. */
             char src_str[DHCP_RESERVATION_NAME_LEN], dst_str[DHCP_RESERVATION_NAME_LEN];
-            if (rules_copy[i].s_mask == 0xFFFFFFFF) {
-                const char* name = lookup_device_name_by_ip(rules_copy[i].src);
-                if (name) {
-                    snprintf(src_str, sizeof(src_str), "%s", name);
-                } else {
-                    acl_format_ip(rules_copy[i].src, rules_copy[i].s_mask, src_str, sizeof(src_str));
-                }
+            const char *name = rules_copy[i].s_mask == 0xFFFFFFFF
+                             ? lookup_device_name_by_ip(rules_copy[i].src) : NULL;
+            if (name) {
+                snprintf(src_str, sizeof(src_str), "%s", name);
             } else {
                 acl_format_ip(rules_copy[i].src, rules_copy[i].s_mask, src_str, sizeof(src_str));
             }
-            if (rules_copy[i].d_mask == 0xFFFFFFFF) {
-                const char* name = lookup_device_name_by_ip(rules_copy[i].dest);
-                if (name) {
-                    snprintf(dst_str, sizeof(dst_str), "%s", name);
-                } else {
-                    acl_format_ip(rules_copy[i].dest, rules_copy[i].d_mask, dst_str, sizeof(dst_str));
-                }
+            name = rules_copy[i].d_mask == 0xFFFFFFFF
+                 ? lookup_device_name_by_ip(rules_copy[i].dest) : NULL;
+            if (name) {
+                snprintf(dst_str, sizeof(dst_str), "%s", name);
             } else {
                 acl_format_ip(rules_copy[i].dest, rules_copy[i].d_mask, dst_str, sizeof(dst_str));
             }
 
-            /* Format ports */
-            char s_port_str[8], d_port_str[8];
-            if (rules_copy[i].s_port == 0) strcpy(s_port_str, "*");
-            else snprintf(s_port_str, sizeof(s_port_str), "%d", rules_copy[i].s_port);
-            if (rules_copy[i].d_port == 0) strcpy(d_port_str, "*");
-            else snprintf(d_port_str, sizeof(d_port_str), "%d", rules_copy[i].d_port);
+            char src_esc[DHCP_RESERVATION_NAME_LEN * 6], dst_esc[DHCP_RESERVATION_NAME_LEN * 6];
+            html_escape_to(src_esc, sizeof(src_esc), src_str);
+            html_escape_to(dst_esc, sizeof(dst_esc), dst_str);
 
-            /* Format action */
+            /* Port 0 means "any" in a rule; ':any' reads as an endpoint where a
+             * bare '*' next to an address does not. */
+            char s_port_str[8], d_port_str[8];
+            if (rules_copy[i].s_port == 0) strcpy(s_port_str, "any");
+            else snprintf(s_port_str, sizeof(s_port_str), "%u", (unsigned)rules_copy[i].s_port);
+            if (rules_copy[i].d_port == 0) strcpy(d_port_str, "any");
+            else snprintf(d_port_str, sizeof(d_port_str), "%u", (unsigned)rules_copy[i].d_port);
+
             const char *action_str;
             uint8_t action = rules_copy[i].allow & 0x01;
             uint8_t monitor = rules_copy[i].allow & ACL_MONITOR;
             if (action == ACL_ALLOW) {
-                action_str = monitor ? "Allow+M" : "Allow";
+                action_str = monitor ? "Allow, capture" : "Allow";
             } else {
-                action_str = monitor ? "Deny+M" : "Deny";
+                action_str = monitor ? "Deny, capture" : "Deny";
             }
 
-            snprintf(row, sizeof(row),
-                "<tr>"
-                "<td>%d</td><td>%s</td><td>%s</td><td>%s</td>"
-                "<td>%s</td><td>%s</td><td>%s</td><td>%lu</td>"
-                "<td><a href='/firewall?del_acl=%d&del_idx=%d' class='red-button'>Del</a></td>"
-                "</tr>",
-                i, proto_str, src_str, s_port_str,
-                dst_str, d_port_str, action_str, (unsigned long)rules_copy[i].hit_count,
+            /* "hits" is spelled out because the column headings disappear when
+             * the table reflows on a phone. */
+            n = snprintf(row, sizeof(row),
+                "<tr><td>%s:%s</td><td>%s:%s</td><td>%s</td>"
+                "<td><span class=\"bd %s\">%s</span></td><td>%lu hits</td>"
+                "<td class=a><a href='/firewall?del_acl=%d&amp;del_idx=%d' "
+                "class=\"b s d\" data-c='Delete this rule?'>Delete</a></td></tr>",
+                src_esc, s_port_str, dst_esc, d_port_str, proto_str,
+                action == ACL_ALLOW ? "ok" : "er", action_str,
+                (unsigned long)rules_copy[i].hit_count,
                 list_no, i);
-            SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+            SEND_RENDERED(req, row, n);
         }
 
         if (rule_count == 0) {
-            SEND_CHUNK(req,
-                "<tr><td colspan='9' style='text-align:center; color:#888;'>No rules (all packets allowed)</td></tr>",
-                HTTPD_RESP_USE_STRLEN);
+            SEND_CHUNK(req, FIREWALL_LIST_EMPTY, HTTPD_RESP_USE_STRLEN);
         }
 
-        /* Close table and section */
-        SEND_CHUNK(req, "</tbody></table></div>", HTTPD_RESP_USE_STRLEN);
+        SEND_CHUNK(req, FIREWALL_LIST_CLOSE, HTTPD_RESP_USE_STRLEN);
     }
 
-    /* Chunk 7: Add form and footer */
-    SEND_CHUNK(req, FIREWALL_CHUNK_TAIL, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, FIREWALL_ADD_OPEN, HTTPD_RESP_USE_STRLEN);
+    for (int list_no = 0; list_no < MAX_ACL_LISTS; list_no++) {
+        n = snprintf(row, sizeof(row), FIREWALL_ADD_OPTION,
+                     list_no, acl_get_desc(list_no));
+        SEND_RENDERED(req, row, n);
+    }
+    SEND_CHUNK(req, FIREWALL_ADD_REST, HTTPD_RESP_USE_STRLEN);
+
+    if (send_page_foot(req) != ESP_OK) {
+        return ESP_FAIL;
+    }
 
     /* End chunked response */
     SEND_CHUNK(req, NULL, 0);
@@ -3429,7 +3366,6 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
                     set_config_param_str("gateway_addr", ""); free(gateway_addr); gateway_addr = strdup("");
                     set_config_param_str("ent_username", ""); free(ent_username); ent_username = strdup("");
                     set_config_param_str("ent_identity", ""); free(ent_identity); ent_identity = strdup("");
-                    set_config_param_int("eap_method",  0); eap_method        = 0;
                     set_config_param_int("ttls_phase2", 0); ttls_phase2       = 0;
                     set_config_param_int("cert_bundle", 0); use_cert_bundle   = 0;
                     set_config_param_int("no_time_chk", 0); disable_time_check = 0;
@@ -3514,6 +3450,7 @@ static esp_err_t vpn_get_handler(httpd_req_t *req)
 
     char* buf = NULL;
     size_t buf_len;
+    bool saved = false;
 
     /* Read URL query string */
     buf_len = httpd_req_get_url_query_len(req) + 1;
@@ -3523,11 +3460,10 @@ static esp_err_t vpn_get_handler(httpd_req_t *req)
             ESP_LOGI(TAG, "VPN query => %s", buf);
 
             char param[128];
-            bool has_config = false;
 
             /* Check if this is a form submission */
             if (httpd_query_key_value(buf, "vpn_enabled", param, sizeof(param)) == ESP_OK) {
-                has_config = true;
+                saved = true;
                 nvs_handle_t nvs;
                 if (nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
                     nvs_set_i32(nvs, "vpn_enabled", atoi(param));
@@ -3581,137 +3517,171 @@ static esp_err_t vpn_get_handler(httpd_req_t *req)
                     esp_timer_start_once(restart_timer, 500000);
                 }
             }
-
-            /* If config was submitted, let the JS handle the "rebooting" message */
-            if (has_config) {
-                /* Fall through to render the page (JS will detect query params and show reboot msg) */
-            }
         }
         if (buf) free(buf);
     }
 
-    /* Reusable buffer for VPN page rows.
-     * Stack buffer (not heap): a SEND_CHUNK bail-out on a dead client returns
+    /* Reusable buffers for the page rows.
+     * Stack, not heap: a SEND_CHUNK bail-out on a dead client returns
      * immediately, and a heap buffer here would leak on every such bail. */
-    #define VPN_BUF_SIZE 768
-    char row[VPN_BUF_SIZE];
+    char row[512];
+    char esc[192];
+    int n;
 
-    /* Head */
-    SEND_CHUNK(req, VPN_CHUNK_HEAD, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_set_type(req, "text/html");
 
-    /* Logout button if authenticated */
-    if (session_active && password_protection_enabled) {
-        SEND_CHUNK(req,
-            "<a href='/?logout=1' style='padding: 0.4rem 1rem; background: rgba(255,82,82,0.15); color: #ff5252; border: 1px solid #ff5252; border-radius: 6px; text-decoration: none; font-size: 0.85rem; font-weight: 500;'>Logout</a>",
-            HTTPD_RESP_USE_STRLEN);
+    if (send_page_head(req, "WireGuard VPN", TAB_VPN,
+                       session_active && password_protection_enabled) != ESP_OK) {
+        return ESP_FAIL;
     }
 
-    /* Mid (script) */
-    SEND_CHUNK(req, VPN_CHUNK_MID, HTTPD_RESP_USE_STRLEN);
+    if (saved) {
+        SEND_CHUNK(req, VPN_REBOOT_NOTE, HTTPD_RESP_USE_STRLEN);
+    }
 
-    /* Status section */
-    SEND_CHUNK(req, "<h2>Status</h2><div class='status-table'><table>", HTTPD_RESP_USE_STRLEN);
+    /* Status ------------------------------------------------------------- */
 
-    if (vpn_enabled) {
-        const char *state, *color;
-        if (vpn_is_connected()) {
-            state = "Connected"; color = "#4caf50";
+    SEND_CHUNK(req, VPN_STATUS_OPEN, HTTPD_RESP_USE_STRLEN);
+
+    {
+        /* vpn_is_connected() is the handshake-complete state; vpn_connected is
+         * set as soon as the tunnel is brought up, so the two together tell
+         * "configured but not talking yet" apart from "down". */
+        const char *state, *cls;
+        if (!vpn_enabled) {
+            state = "Disabled";           cls = "n";
+        } else if (vpn_is_connected()) {
+            state = "Connected";          cls = "bd ok";
         } else if (vpn_connected) {
-            state = "Handshake Pending"; color = "#ffc107";
+            state = "Handshake pending";  cls = "bd wn";
         } else {
-            state = "Disconnected"; color = "#f44336";
+            state = "Disconnected";       cls = "bd er";
         }
-        snprintf(row, VPN_BUF_SIZE, "<tr><td>VPN:</td><td><strong style='color:%s;'>%s</strong></td></tr>", color, state);
-    } else {
-        snprintf(row, VPN_BUF_SIZE, "<tr><td>VPN:</td><td><strong style='color:#888;'>Disabled</strong></td></tr>");
+        n = snprintf(row, sizeof(row),
+                     "<tr><td>Tunnel</td><td><span class=\"%s\">%s</span></td></tr>",
+                     cls, state);
+        SEND_RENDERED(req, row, n);
     }
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
     if (vpn_address && vpn_address[0]) {
-        snprintf(row, VPN_BUF_SIZE, "<tr><td>Tunnel IP:</td><td>%s</td></tr>", vpn_address);
-        SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+        html_escape_to(esc, sizeof(esc), vpn_address);
+        n = snprintf(row, sizeof(row),
+                     "<tr><td>Tunnel address</td><td>%s</td></tr>", esc);
+        SEND_RENDERED(req, row, n);
     }
-    snprintf(row, VPN_BUF_SIZE, "<tr><td>MSS Clamp:</td><td>%u</td></tr><tr><td>Path MTU:</td><td>%u</td></tr>",
-             ap_mss_clamp, ap_pmtu);
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
 
-    snprintf(row, VPN_BUF_SIZE, "<tr><td>Kill Switch:</td><td><strong style='color:%s;'>%s</strong></td></tr>",
-             vpn_killswitch ? "#4caf50" : "#888", vpn_killswitch ? "On" : "Off");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    n = snprintf(row, sizeof(row),
+                 "<tr><td>MSS clamp</td><td>%u</td></tr>"
+                 "<tr><td>Path MTU</td><td>%u</td></tr>"
+                 "<tr><td>Kill switch</td><td><span class=\"%s\">%s</span></td></tr>"
+                 "<tr><td>Routing</td><td>%s</td></tr>",
+                 (unsigned)ap_mss_clamp, (unsigned)ap_pmtu,
+                 vpn_killswitch ? "bd ok" : "n", vpn_killswitch ? "On" : "Off",
+                 vpn_route_all ? "All traffic" : "Split tunnel");
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE, "<tr><td>Route All:</td><td><strong style='color:%s;'>%s</strong></td></tr>",
-             vpn_route_all ? "#4caf50" : "#2196f3", vpn_route_all ? "Yes" : "No (split tunnel)");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, VPN_STATUS_CLOSE, HTTPD_RESP_USE_STRLEN);
 
-    SEND_CHUNK(req, "</table></div>", HTTPD_RESP_USE_STRLEN);
+    /* This router's end of the tunnel -------------------------------------
+     *
+     * Every value below comes out of NVS, so it is escaped on the way into an
+     * attribute: a config import or a console command can put anything at all
+     * in these strings. */
 
-    /* Form - streamed field by field to avoid large snprintf */
-    SEND_CHUNK(req, VPN_CHUNK_FORM_OPEN, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, VPN_FORM_OPEN, HTTPD_RESP_USE_STRLEN);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Enabled</td><td><select name='vpn_enabled'>"
-        "<option value='1' %s>On</option><option value='0' %s>Off</option>"
-        "</select></td></tr>",
-        vpn_enabled ? "selected" : "", vpn_enabled ? "" : "selected");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    n = snprintf(row, sizeof(row),
+                 "<label for=ve>Enabled</label>"
+                 "<select id=ve name=vpn_enabled>"
+                 "<option value=1%s>Enabled</option>"
+                 "<option value=0%s>Disabled</option></select>",
+                 vpn_enabled ? " selected" : "", vpn_enabled ? "" : " selected");
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Private Key</td><td><input type='password' name='vpn_privkey' placeholder='%s'/></td></tr>",
-        (vpn_private_key && vpn_private_key[0]) ? "unchanged" : "Base64 private key");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    n = snprintf(row, sizeof(row),
+                 "<label for=vk>Private key</label>"
+                 "<input id=vk type=password name=vpn_privkey placeholder='%s'>",
+                 (vpn_private_key && vpn_private_key[0]) ? "unchanged"
+                                                         : "base64 private key");
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Public Key</td><td><input type='text' name='vpn_pubkey' value='%s' placeholder='Peer base64 public key'/></td></tr>",
-        vpn_public_key ? vpn_public_key : "");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    html_escape_to(esc, sizeof(esc), vpn_address);
+    n = snprintf(row, sizeof(row),
+                 "<label for=va>Address</label>"
+                 "<input id=va type=text name=vpn_ip value='%s' placeholder='10.2.0.2'>",
+                 esc);
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Preshared Key</td><td><input type='password' name='vpn_psk' placeholder='%s'/></td></tr>",
-        (vpn_preshared_key && vpn_preshared_key[0]) ? "unchanged" : "Optional");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    html_escape_to(esc, sizeof(esc), vpn_netmask ? vpn_netmask : "255.255.255.0");
+    n = snprintf(row, sizeof(row),
+                 "<label for=vm>Netmask</label>"
+                 "<input id=vm type=text name=vpn_mask value='%s'>", esc);
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Endpoint</td><td><input type='text' name='vpn_endpoint' value='%s' placeholder='Host or IP'/></td></tr>"
-        "<tr><td>Port</td><td><input type='number' name='vpn_port' value='%d' min='1' max='65535'/></td></tr>"
-        "<tr><td>Tunnel IP</td><td><input type='text' name='vpn_ip' value='%s' placeholder='e.g. 10.0.0.2'/></td></tr>"
-        "<tr><td>Netmask</td><td><input type='text' name='vpn_mask' value='%s' placeholder='255.255.255.0'/></td></tr>",
-        vpn_endpoint ? vpn_endpoint : "",
-        (int)vpn_port,
-        vpn_address ? vpn_address : "",
-        vpn_netmask ? vpn_netmask : "255.255.255.0");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    html_escape_to(esc, sizeof(esc), vpn_dns);
+    n = snprintf(row, sizeof(row),
+                 "<label for=vd>DNS</label>"
+                 "<input id=vd type=text name=vpn_dns value='%s' placeholder='optional'>"
+                 "<p class=hint>Handed to clients while the tunnel is up.</p>", esc);
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>DNS</td><td><input type='text' name='vpn_dns' value='%s' placeholder='Optional, e.g. 10.2.0.1'/></td></tr>",
-        vpn_dns ? vpn_dns : "");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    n = snprintf(row, sizeof(row),
+                 "<label for=vs>Kill switch</label>"
+                 "<select id=vs name=vpn_ks>"
+                 "<option value=1%s>On</option><option value=0%s>Off</option></select>"
+                 "<p class=hint>Blocks client traffic whenever the tunnel is down.</p>",
+                 vpn_killswitch ? " selected" : "", vpn_killswitch ? "" : " selected");
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Keepalive (sec)</td><td><input type='number' name='vpn_ka' value='%d' min='0' max='65535'/></td></tr>",
-        (int)vpn_keepalive);
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    n = snprintf(row, sizeof(row),
+                 "<label for=vr>Routing</label>"
+                 "<select id=vr name=vpn_rall>"
+                 "<option value=1%s>All traffic</option>"
+                 "<option value=0%s>Split tunnel</option></select>",
+                 vpn_route_all ? " selected" : "", vpn_route_all ? "" : " selected");
+    SEND_RENDERED(req, row, n);
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Kill Switch</td><td><select name='vpn_ks'>"
-        "<option value='1' %s>On</option><option value='0' %s>Off</option>"
-        "</select></td></tr>",
-        vpn_killswitch ? "selected" : "", vpn_killswitch ? "" : "selected");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    /* The remote end ------------------------------------------------------ */
 
-    snprintf(row, VPN_BUF_SIZE,
-        "<tr><td>Route All</td><td><select name='vpn_rall'>"
-        "<option value='1' %s>Yes (all traffic)</option><option value='0' %s>No (split tunnel)</option>"
-        "</select></td></tr>",
-        vpn_route_all ? "selected" : "", vpn_route_all ? "" : "selected");
-    SEND_CHUNK(req, row, HTTPD_RESP_USE_STRLEN);
+    SEND_CHUNK(req, VPN_FORM_MID, HTTPD_RESP_USE_STRLEN);
 
-    SEND_CHUNK(req, VPN_CHUNK_FORM_CLOSE, HTTPD_RESP_USE_STRLEN);
+    html_escape_to(esc, sizeof(esc), vpn_public_key);
+    n = snprintf(row, sizeof(row),
+                 "<label for=vp>Public key</label>"
+                 "<input id=vp type=text name=vpn_pubkey value='%s' "
+                 "placeholder='base64 public key'>", esc);
+    SEND_RENDERED(req, row, n);
 
-    /* Import section (paste a standard WireGuard .conf) - after the config fields */
-    SEND_CHUNK(req, VPN_CHUNK_IMPORT, HTTPD_RESP_USE_STRLEN);
+    n = snprintf(row, sizeof(row),
+                 "<label for=vq>Preshared key</label>"
+                 "<input id=vq type=password name=vpn_psk placeholder='%s'>",
+                 (vpn_preshared_key && vpn_preshared_key[0]) ? "unchanged" : "optional");
+    SEND_RENDERED(req, row, n);
 
-    /* Page footer (Home button + close tags) */
-    SEND_CHUNK(req, VPN_CHUNK_PAGE_END, HTTPD_RESP_USE_STRLEN);
+    html_escape_to(esc, sizeof(esc), vpn_endpoint);
+    n = snprintf(row, sizeof(row),
+                 "<label for=vh>Endpoint</label>"
+                 "<input id=vh type=text name=vpn_endpoint value='%s' "
+                 "placeholder='host or IP'>"
+                 "<label for=vo>Port</label>"
+                 "<input id=vo type=number name=vpn_port value='%d' min=1 max=65535>",
+                 esc, (int)vpn_port);
+    SEND_RENDERED(req, row, n);
+
+    n = snprintf(row, sizeof(row),
+                 "<label for=vka>Keepalive</label>"
+                 "<input id=vka type=number name=vpn_ka value='%d' min=0 max=65535>"
+                 "<p class=hint>Seconds between keepalives; 0 disables them.</p>",
+                 (int)vpn_keepalive);
+    SEND_RENDERED(req, row, n);
+
+    SEND_CHUNK(req, VPN_FORM_CLOSE, HTTPD_RESP_USE_STRLEN);
+
+    SEND_CHUNK(req, VPN_IMPORT, HTTPD_RESP_USE_STRLEN);
+
+    if (send_page_foot(req) != ESP_OK) {
+        return ESP_FAIL;
+    }
 
     /* End chunked response */
     SEND_CHUNK(req, NULL, 0);
@@ -3811,13 +3781,6 @@ httpd_handle_t start_webserver(uint16_t port)
     ESP_LOGI(TAG, "Error starting server!");
     return NULL;
 }
-
-static void stop_webserver(httpd_handle_t server)
-{
-    // Stop the httpd server
-    httpd_stop(server);
-}
-
 
 // ---------- Captive portal ----------
 

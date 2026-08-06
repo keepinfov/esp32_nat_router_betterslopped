@@ -90,16 +90,6 @@ static void fb_clear(void)
     memset(framebuffer, 0, FB_SIZE);
 }
 
-static void fb_set_pixel(int x, int y)
-{
-    if (x < 0 || x >= OLED_WIDTH || y < 0 || y >= OLED_HEIGHT)
-        return;
-
-    int page = y / 8;
-    int bit  = y % 8;
-    framebuffer[page * OLED_WIDTH + x] |= (1 << bit);
-}
-
 static void fb_draw_char(int col, int page, char c)
 {
     if (col < 0 || col >= OLED_WIDTH - 4 || page < 0 || page >= OLED_PAGES)
@@ -121,7 +111,19 @@ static void fb_draw_string(int page, const char *str)
     }
 }
 
+/* Doubled glyphs are the only thing that plots individual pixels, and only the
+ * S3 board is tall enough to use them. */
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
+static void fb_set_pixel(int x, int y)
+{
+    if (x < 0 || x >= OLED_WIDTH || y < 0 || y >= OLED_HEIGHT)
+        return;
+
+    int page = y / 8;
+    int bit  = y % 8;
+    framebuffer[page * OLED_WIDTH + x] |= (1 << bit);
+}
+
 static void fb_draw_char_2x(int x, int y, char c)
 {
     if (c < 0x20 || c > 0x7E)
@@ -255,11 +257,11 @@ static void format_ip(char *out, size_t out_sz, uint32_t ip)
 static void render_status(int page)
 {
     char line[24];
-    char ipbuf[20];
 
     fb_clear();
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
+    char ipbuf[20];
 
     if (page == 0) {
         /* Page 1: SSIDs with big labels and normal values */
@@ -312,14 +314,13 @@ static void render_status(int page)
         fb_draw_string(1, "DOWN");
     }
 
-    if (ap_connect && my_ip != 0) {
-        ip4_addr_t addr;
-        addr.addr = my_ip;
-        snprintf(line, sizeof(line), IPSTR, IP2STR(&addr));
+    /* format_ip() prints "No IP" for a zero address, so the disconnected case
+     * needs no branch of its own.  A long address is shown tail-first: the last
+     * octets are what distinguishes one from another. */
+    format_ip(line, sizeof(line), ap_connect ? my_ip : 0);
+    {
         int len = strlen(line);
         fb_draw_string(2, len > MAX_COLS ? line + (len - MAX_COLS) : line);
-    } else {
-        fb_draw_string(2, "No IP");
     }
 
     snprintf(line, sizeof(line), "Clients: %d", connect_count);

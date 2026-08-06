@@ -108,7 +108,6 @@ uint8_t ap_channel = 0;
 
 #if !CONFIG_ETH_UPLINK
 // WPA2-Enterprise settings
-int32_t eap_method = 0;          // 0=Auto, 1=PEAP, 2=TTLS, 3=TLS
 int32_t ttls_phase2 = 0;         // 0=MSCHAPv2, 1=MSCHAP, 2=PAP, 3=CHAP
 int32_t use_cert_bundle = 0;     // 0=off, 1=on
 int32_t disable_time_check = 0;  // 0=off, 1=on
@@ -1397,10 +1396,6 @@ void app_main(void)
 
 #if !CONFIG_ETH_UPLINK
     // Load WPA2-Enterprise settings from NVS (defaults: 0)
-    int eap_setting = 0;
-    if (get_config_param_int("eap_method", &eap_setting) == ESP_OK) {
-        eap_method = (int32_t)eap_setting;
-    }
     int phase2_setting = 0;
     if (get_config_param_int("ttls_phase2", &phase2_setting) == ESP_OK) {
         ttls_phase2 = (int32_t)phase2_setting;

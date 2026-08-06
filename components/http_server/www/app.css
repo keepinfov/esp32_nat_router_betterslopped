@@ -92,6 +92,9 @@ body {
 }
 
 .c > h2 { font-size: 1rem; font-weight: 600; margin-bottom: 10px }
+/* A second heading in the same card needs room above it; the first does
+   not, because the card's own padding is already there. */
+.c > h2 ~ h2 { margin-top: 14px }
 
 .ft {
   color: var(--fg2);
@@ -110,6 +113,12 @@ body {
 .f > label { color: var(--fg2); font-size: .9rem }
 .f > .full { grid-column: 1 / -1 }
 .f > .hint { grid-column: 2; color: var(--fg2); font-size: .8rem; margin-top: -4px }
+/* A form's buttons: aligned under the inputs rather than under the labels.
+   This is a class and not an inline grid-column because the single-column
+   layout below has to move it back — placing it in column 2 of a one-column
+   grid conjures an implicit second track and squeezes every field into the
+   first one. */
+.f > .act { grid-column: 2 }
 
 input, select, textarea {
   font: inherit;
@@ -202,7 +211,7 @@ details > :last-child { padding-bottom: 12px }
 @media (max-width: 640px) {
   .f { grid-template-columns: 1fr; gap: 4px }
   .f > label { margin-top: 6px }
-  .f > .hint { grid-column: 1 }
+  .f > .hint, .f > .act { grid-column: 1 }
   .hd h1 { font-size: 1.1rem }
 
   /* Data tables stop being tables and become one compact block per record:

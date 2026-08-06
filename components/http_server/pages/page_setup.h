@@ -29,7 +29,7 @@
     "<label for=upp>Password</label>" \
     "<input id=upp type=password name=password placeholder='unchanged'>" \
     "<p class=hint>Pick one from <a href=/scan>Scan</a> to fill this in.</p>" \
-    "<button class=\"b p\" type=submit style=grid-column:2>Save and restart</button>" \
+    "<button class=\"b p act\" type=submit>Save and restart</button>" \
     "</div></div></form>"
 
 #endif /* !CONFIG_ETH_UPLINK */

@@ -1,95 +1,42 @@
-/* VPN page templates */
-/* VPN Page - Chunked for streaming */
-#define VPN_CHUNK_HEAD "<!DOCTYPE html><html lang=en>\
-<head>\
-<meta name='viewport' content='width=device-width, initial-scale=1'>\
-<meta charset='UTF-8'>\
-<title>WireGuard VPN</title>\
-<link rel='icon' href='favicon.png'>\
-</head>\
-<style>\
-* { box-sizing: border-box; margin: 0; padding: 0; }\
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #e0e0e0; padding: 1rem; min-height: 100vh; line-height: 1.6; }\
-h1 { font-size: 1.5rem; font-weight: 600; color: #00d9ff; margin-bottom: 1rem; text-shadow: 0 0 20px rgba(0, 217, 255, 0.3); }\
-h2 { font-size: 1.15rem; font-weight: 500; color: #00d9ff; margin: 1.5rem 0 0.75rem 0; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(0, 217, 255, 0.2); }\
-#container { max-width: 500px; margin: 0 auto; padding: 1.5rem; background: rgba(30, 30, 46, 0.9); border-radius: 16px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4); backdrop-filter: blur(10px); }\
-table { width: 100%; border-collapse: collapse; }\
-td { padding: 0.5rem 0; vertical-align: top; }\
-td:first-child { color: #888; font-size: 0.9rem; padding-right: 0.75rem; width: 35%; text-align: right; }\
-input[type='text'], input[type='number'], input[type='password'] { width: 100%; background: rgba(22, 33, 62, 0.6); border: 1px solid rgba(0, 217, 255, 0.2); border-radius: 8px; color: #e0e0e0; padding: 0.75rem; font-size: 0.95rem; }\
-input[type='text']:focus, input[type='number']:focus, input[type='password']:focus, select:focus { outline: none; border-color: #00d9ff; box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); background: rgba(22, 33, 62, 0.8); }\
-input::placeholder { color: #666; }\
-textarea { width: 100%; background: rgba(22, 33, 62, 0.6); border: 1px solid rgba(0, 217, 255, 0.2); border-radius: 8px; color: #e0e0e0; padding: 0.75rem; font-size: 0.85rem; font-family: monospace; resize: vertical; }\
-textarea:focus { outline: none; border-color: #00d9ff; box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }\
-textarea::placeholder { color: #666; }\
-select { width: 100%; background: rgba(22, 33, 62, 0.6); border: 1px solid rgba(0, 217, 255, 0.2); border-radius: 8px; color: #e0e0e0; padding: 0.75rem; font-size: 0.95rem; cursor: pointer; -webkit-appearance: none; -moz-appearance: none; appearance: none; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2300d9ff' stroke-width='1.5' fill='none'/%3E%3C/svg%3E\"); background-repeat: no-repeat; background-position: right 0.75rem center; padding-right: 2rem; }\
-select option { background: #16213e; color: #e0e0e0; }\
-.ok-button { border: none; border-radius: 8px; padding: 0.75rem 1.5rem; font-size: 0.95rem; font-weight: 600; cursor: pointer; width: 100%; margin-top: 0.5rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); }\
-.status-table { background: rgba(22, 33, 62, 0.6); border-radius: 12px; padding: 1rem; margin: 1rem 0; border: 1px solid rgba(0, 217, 255, 0.1); }\
-.status-table table { width: 100%; }\
-.status-table td { padding: 0.75rem 0.5rem; font-size: 0.95rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }\
-.status-table tr:last-child td { border-bottom: none; }\
-.status-table td:first-child { color: #888; text-align: right; padding-right: 1rem; width: 45%; font-size: 0.9rem; }\
-.status-table td:last-child { color: #e0e0e0; font-weight: 500; }\
-small { display: block; color: #888; font-size: 0.85rem; margin-top: 0.5rem; line-height: 1.4; }\
-@media (max-width: 600px) { body { padding: 0.5rem; } #container { padding: 1rem; } h1 { font-size: 1.25rem; } h2 { font-size: 1rem; } td:first-child { font-size: 0.8rem; width: 40%; } input[type='text'], input[type='number'], input[type='password'], select { font-size: 0.9rem; padding: 0.65rem; } .ok-button { font-size: 0.9rem; padding: 0.65rem 1.25rem; } }\
-</style>\
-<body>\
-<div id='container'>\
-<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>\
-<div style='display: flex; align-items: center;'>\
-<a href='/' style='display: inline-block; margin-right: 1rem;'><img src='/favicon.png' alt='Home' style='width: 64px; height: 64px; border: none;'></a>\
-<h1 style='margin: 0;'>WireGuard VPN</h1>\
-</div>"
+/* WireGuard VPN page fragments.
+ *
+ * Chrome comes from page_common.h through send_page_head() / send_page_foot().
+ * What is left here is the status readout, the settings form and the .conf
+ * import box.
+ *
+ * Two things this page used to carry are gone. The inline stylesheet is now
+ * /app.css, shared with every other page. And the "Settings saved, rebooting"
+ * banner used to be a script that inspected window.location.search and blanked
+ * the body — the handler is the one that queues the restart, so it says so
+ * itself and the page needs no JavaScript for that at all.
+ */
 
-#define VPN_CHUNK_MID "\
-</div>\
-<script>\
-var qs = window.location.search.substr(1);\
-if (qs.indexOf('vpn_enabled=') !== -1 || qs.indexOf('vpn_privkey=') !== -1) {\
-document.getElementById('container').style.display = 'none';\
-document.body.innerHTML ='<div id=\"container\"><h1>WireGuard VPN</h1><p style=\"text-align:center; margin: 2rem 0; color: #00d9ff;\">Settings saved! Rebooting...</p></div>';\
-setTimeout(\"location.href = '/'\", 10000);\
-}\
-</script>"
+#define VPN_REBOOT_NOTE "<p class=\"al ok\">Settings saved. The router is " \
+    "restarting; this page comes back once it is up again.</p>"
 
-/* Import section - paste a standard WireGuard .conf */
-#define VPN_CHUNK_IMPORT "\
-<h2>Import Config</h2>\
-<p style='color:#888; font-size:0.85rem; margin-bottom:0.5rem;'>Paste a WireGuard .conf. The fields below are filled and the device reboots.</p>\
-<textarea id='wgconf' rows='9' placeholder='[Interface]&#10;PrivateKey = ...&#10;Address = 10.2.0.2/32&#10;DNS = 10.2.0.1&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = host:51820&#10;AllowedIPs = 0.0.0.0/0'></textarea>\
-<button type='button' class='ok-button' onclick='importWg()'>Import &amp; Reboot</button>\
-<div id='wgmsg' style='margin-top:0.5rem; font-size:0.9rem;'></div>\
-<script>\
-function importWg(){\
-var t=document.getElementById('wgconf').value;\
-var m=document.getElementById('wgmsg');\
-if(!t.trim()){m.style.color='#ff5252';m.textContent='Paste a config first.';return;}\
-m.style.color='#00d9ff';m.textContent='Importing...';\
-fetch('/api/vpn-import',{method:'POST',body:t}).then(function(r){return r.json();}).then(function(d){\
-if(d.ok){m.style.color='#4caf50';m.textContent=d.msg;setTimeout(function(){location.href='/';},10000);}\
-else{m.style.color='#ff5252';m.textContent=d.msg||'Import failed';}\
-}).catch(function(){m.style.color='#ff5252';m.textContent='Request failed';});\
-}\
-</script>"
+#define VPN_STATUS_OPEN "<div class=c><h2>Status</h2><table class=\"t kv\"><tbody>"
+#define VPN_STATUS_CLOSE "</tbody></table></div>"
 
-/* VPN form - static wrapper (no format strings) */
-#define VPN_CHUNK_FORM_OPEN "\
-<h2>Configuration</h2>\
-<form action='/vpn' method='GET'>\
-<table>"
+#define VPN_FORM_OPEN "<form action=/vpn method=GET>" \
+    "<div class=c><h2>Tunnel</h2><div class=f>"
 
-#define VPN_CHUNK_FORM_CLOSE "\
-<tr><td></td><td><input type='submit' value='Save &amp; Reboot' class='ok-button'/></td></tr>\
-</table>\
-</form>"
+/* Between this router's own settings and the remote peer's.  One card, two
+ * headings: the Save button belongs to both halves, and a second card would
+ * have put it visually inside the peer settings alone. */
+#define VPN_FORM_MID "</div><h2>Peer</h2><div class=f>"
 
-/* Page footer - emitted after the import section */
-#define VPN_CHUNK_PAGE_END "\
-<div style='margin-top: 1.5rem; text-align: center;'>\
-<a href='/' style='padding: 0.6rem 1.5rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; border: none; border-radius: 8px; text-decoration: none; font-size: 0.9rem; font-weight: 600;'>Home</a>\
-</div>\
-</div>\
-</body>\
-</html>"
+#define VPN_FORM_CLOSE "<button class=\"b p act\" type=submit>" \
+    "Save and restart</button></div></div></form>"
 
+/* The import box is the one part of the page that needs JavaScript; without it
+ * the fields above still work, which is why it sits below them rather than
+ * above. The click handler lives in app.js, where it costs nothing in flash.
+ * &#10; is a newline inside the placeholder attribute. */
+#define VPN_IMPORT "<div class=c><h2>Import a configuration</h2>" \
+    "<p class=n>Paste a WireGuard <code>.conf</code>. The fields above are " \
+    "filled in from it and the router restarts.</p>" \
+    "<textarea id=wgc rows=8 placeholder='[Interface]&#10;PrivateKey = ...&#10;" \
+    "Address = 10.2.0.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;" \
+    "Endpoint = host:51820'></textarea>" \
+    "<p style=margin-top:8px><button class=b type=button id=wgb>Import and " \
+    "restart</button> <span id=wgm class=n></span></p></div>"

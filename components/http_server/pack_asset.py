@@ -60,8 +60,14 @@ def minify_js(src):
     """Drop comments and indentation only.
 
     Deliberately conservative: collapsing statements risks automatic semicolon
-    insertion changing behaviour, and this file is under a kilobyte, so the
-    remaining newlines cost almost nothing after gzip.
+    insertion changing behaviour, and the remaining newlines cost almost nothing
+    after gzip.
+
+    String literals are tracked so a '//' inside one survives; regex literals
+    are not, so a regex containing a quote character would send the scanner
+    looking for a closing quote that never comes. Nothing is lost when that
+    happens — the span is copied verbatim — but the code in www/ avoids regex
+    literals rather than relying on that.
     """
     out = []
     i, n = 0, len(src)

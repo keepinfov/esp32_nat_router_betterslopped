@@ -235,9 +235,21 @@ On a phone the tables fold into one compact block per record — every field
 stays visible, and nothing scrolls sideways:
 
 <p>
-<img src="docs/img/ui-status-phone.png" alt="Status page on a phone" width="300">
-<img src="docs/img/ui-scan-phone.png" alt="WiFi scan on a phone" width="300">
+<img src="docs/img/ui-status-phone.png" alt="Status page on a phone" width="290">
+<img src="docs/img/ui-mappings-phone.png" alt="Mappings page on a phone" width="290">
 </p>
+
+Everything on the configuration page is one screen. Each group opens where it
+sits, so the setting you came for is one click away instead of one scroll:
+
+| Light | Dark |
+|---|---|
+| <img src="docs/img/ui-config-light.png" alt="Configuration page, light theme"> | <img src="docs/img/ui-config-dark.png" alt="Configuration page, dark theme"> |
+
+Firewall rules read as endpoints rather than as a grid of six address and port
+columns:
+
+<img src="docs/img/ui-firewall-dark.png" alt="Firewall page">
 
 ### What changed
 
@@ -249,7 +261,10 @@ these are the differences you will notice:
 | **Navigation** | Six buttons on the home page; every other page had a single "Home" button at the bottom, so any two settings pages were two clicks apart | A tab bar on every page |
 | **Theme** | Dark only, with a light-yellow warning card sitting in the middle of it | Follows your system's light or dark setting |
 | **On a phone** | Wide tables ran off the edge of the screen, and pinch-zoom was disabled, so there was no way to see the rest | Records fold into a compact block; every field fits, zoom works |
-| **Page weight** | Each page re-sent its own copy of the stylesheet, about 24 KB in total across the seven pages | One stylesheet, 1.3 KB, cached after the first page |
+| **Page weight** | Each page re-sent its own copy of the stylesheet and its own scripts, about 28 KB in total across the seven pages | One stylesheet and one script, 2.8 KB together, cached after the first page |
+| **Configuration** | Eight settings groups stacked one below the other; reaching the last one meant scrolling past all seven | Eight collapsible groups, the access point open, the whole page on one screen |
+| **Firewall rules** | Nine columns — address and port split apart for both ends, plus a row number | Six columns; each end reads as one endpoint, `10.0.0.0/8:any` |
+| **Errors** | A modal overlay with its own stylesheet and a dismiss button | A line at the top of the page |
 | **Scan page** | Reloaded itself every 15 seconds, losing your scroll position each time | Reloads only while a scan is actually running |
 | **Signal strength** | Coloured bars | Spelled out — "Excellent", "Fair", "Weak" — so it reads on a monochrome screen and to a screen reader |
 | **Look** | Purple-to-pink gradient buttons, emoji labels, glowing headings | Flat surfaces, one accent colour, system font |
@@ -269,11 +284,18 @@ network:
 - Passwords, the WireGuard private key and the pre-shared key no longer appear
   in the console log.
 
-Two things are still on the way: the Config, Mappings, Firewall, VPN and Setup
-pages have not been moved to the new layout yet and still look like the older
-build, and the pages that change settings still do so through GET requests,
-which a hostile website could trigger. Set a web UI password, and prefer
-binding the interface to the AP only, until that lands.
+- Values that come out of stored configuration — the hostname, the DNS server,
+  the WireGuard peer key and endpoint, a DHCP reservation's name — are escaped
+  on the way into the page. A restored backup could previously put markup in
+  any of them.
+- The "EAP method" dropdown is gone. It stored and displayed a value that was
+  never passed to the Wi-Fi stack, which negotiates the method with the server
+  itself; the control could not affect anything.
+
+One thing is still on the way: the pages that change settings still do so
+through GET requests, which a hostile website could trigger while you are
+logged in. Set a web UI password, and prefer binding the interface to the AP
+only, until that lands.
 
 ## Licence
 

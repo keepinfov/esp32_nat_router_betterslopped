@@ -1,376 +1,240 @@
-/* Configuration page templates */
+/* Configuration page fragments.
+ *
+ * Chrome comes from page_common.h through send_page_head() / send_page_foot().
+ *
+ * Eight settings groups used to be eight stacked <h2> blocks, so reaching the
+ * danger zone meant scrolling past everything else. They are <details> in one
+ * card now, with the access point open: the whole page is one screen until you
+ * open the group you came for.
+ *
+ * Three things this page used to carry in flash are gone. The inline
+ * stylesheet is /app.css. The "Settings saved! Rebooting..." banner was a
+ * script that read window.location.search and replaced document.body — the
+ * handler knows whether it queued a restart, so it says so itself. And the
+ * ~4 KB of OTA / backup / restore JavaScript is in /app.js, where it is
+ * minified and gzipped instead of embedded verbatim as a C string.
+ */
 #include "router_config.h"
 #include "wifi_config.h"
 
-/* Configuration Page - WiFi settings and MAC addresses */
-/* Config Page - Chunked for streaming */
-#define CONFIG_CHUNK_HEAD "<!DOCTYPE html><html lang=en>\
-<head>\
-<meta name='viewport' content='width=device-width, initial-scale=1'>\
-<meta charset='UTF-8'>\
-<title>Configuration</title>\
-<link rel='icon' href='favicon.png'>\
-</head>\
-<style>\
-* { box-sizing: border-box; margin: 0; padding: 0; }\
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #e0e0e0; padding: 1rem; min-height: 100vh; line-height: 1.6; }\
-h1 { font-size: 1.5rem; font-weight: 600; color: #00d9ff; margin-bottom: 1rem; text-shadow: 0 0 20px rgba(0, 217, 255, 0.3); }\
-h2 { font-size: 1.15rem; font-weight: 500; color: #00d9ff; margin: 1.5rem 0 0.75rem 0; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(0, 217, 255, 0.2); }\
-#container { max-width: 500px; margin: 0 auto; padding: 1.5rem; background: rgba(30, 30, 46, 0.9); border-radius: 16px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4); backdrop-filter: blur(10px); }\
-form { margin-bottom: 1.5rem; }\
-table { width: 100%; border-collapse: collapse; }\
-td { padding: 0.5rem 0; vertical-align: top; }\
-td:first-child { color: #888; font-size: 0.9rem; padding-right: 0.75rem; width: 35%; text-align: right; }\
-input[type='text'], input[type='password'], input[type='number'] { width: 100%; background: rgba(22, 33, 62, 0.6); border: 1px solid rgba(0, 217, 255, 0.2); border-radius: 8px; color: #e0e0e0; padding: 0.75rem; font-size: 0.95rem; }\
-input[type='text']:focus, input[type='password']:focus, input[type='number']:focus, select:focus { outline: none; border-color: #00d9ff; box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); background: rgba(22, 33, 62, 0.8); }\
-input::placeholder { color: #666; }\
-select { width: 100%; background: rgba(22, 33, 62, 0.6); border: 1px solid rgba(0, 217, 255, 0.2); border-radius: 8px; color: #e0e0e0; padding: 0.75rem; font-size: 0.95rem; cursor: pointer; -webkit-appearance: none; -moz-appearance: none; appearance: none; background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2300d9ff' stroke-width='1.5' fill='none'/%3E%3C/svg%3E\"); background-repeat: no-repeat; background-position: right 0.75rem center; padding-right: 2rem; }\
-select option { background: #16213e; color: #e0e0e0; }\
-input[type='checkbox'], input[type='radio'] { -webkit-appearance: none; -moz-appearance: none; appearance: none; width: 18px; height: 18px; border: 2px solid rgba(0, 217, 255, 0.3); border-radius: 4px; background: rgba(22, 33, 62, 0.6); cursor: pointer; vertical-align: middle; position: relative; flex-shrink: 0; }\
-input[type='radio'] { border-radius: 50%; }\
-input[type='checkbox']:checked, input[type='radio']:checked { background: #00d9ff; border-color: #00d9ff; }\
-input[type='checkbox']:checked::after { content: ''; position: absolute; left: 4px; top: 1px; width: 6px; height: 10px; border: solid #1a1a2e; border-width: 0 2px 2px 0; transform: rotate(45deg); }\
-input[type='radio']:checked::after { content: ''; position: absolute; left: 3px; top: 3px; width: 8px; height: 8px; border-radius: 50%; background: #1a1a2e; }\
-input[type='checkbox']:focus, input[type='radio']:focus { outline: none; border-color: #00d9ff; box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }\
-.ok-button, .red-button { border: none; border-radius: 8px; padding: 0.75rem 1.5rem; font-size: 0.95rem; font-weight: 600; cursor: pointer; width: 100%; margin-top: 0.5rem; }\
-.ok-button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4); }\
-.red-button { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: #fff; box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4); }\
-small { display: block; color: #888; font-size: 0.85rem; margin-top: 0.5rem; line-height: 1.4; }\
-@media (max-width: 600px) { body { padding: 0.5rem; } #container { padding: 1rem; } h1 { font-size: 1.25rem; } h2 { font-size: 1rem; } td:first-child { font-size: 0.8rem; width: 40%; } input[type='text'], input[type='password'], input[type='number'], select { font-size: 0.9rem; padding: 0.65rem; } select { padding-right: 1.75rem; } .ok-button, .red-button { font-size: 0.9rem; padding: 0.65rem 1.25rem; } }\
-</style>\
-<body>\
-<div id='container'>\
-<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>\
-<div style='display: flex; align-items: center;'>\
-<a href='/' style='display: inline-block; margin-right: 1rem;'><img src='/favicon.png' alt='Home' style='width: 64px; height: 64px; border: none;'></a>\
-<h1 style='margin: 0;'>Configuration</h1>\
-</div>"
+#define CONFIG_REBOOT_NOTE "<p class=\"al ok\">Saved. The router is " \
+    "restarting; reconnect and reload this page.</p>"
 
-/* After logout section */
-#define CONFIG_CHUNK_SCRIPT "\
-</div>\
-<script>\
-var qs = window.location.search.substr(1);\
-var formSubmitted = qs.indexOf('ap_ssid=') !== -1 || (qs.indexOf('ssid=') !== -1 && qs.indexOf('password=') !== -1) || qs.indexOf('staticip=') !== -1 || qs.indexOf('reset=') !== -1 || qs.indexOf('disable_interface=') !== -1;\
-if (formSubmitted) {\
-document.getElementById('container').style.display = 'none';\
-document.body.innerHTML ='<div id=\"container\"><h1>Configuration</h1><p style=\"text-align:center; margin: 2rem 0; color: #00d9ff;\">Settings saved! Rebooting...</p></div>';\
-setTimeout(\"location.href = '/'\", 10000);\
-}\
-</script>"
-
-/* AP Settings section - uses %s for: ap_ssid, ap_ip, ap_hostname, ap_dns, ap_mac, ap_en_checked, open_checked, hidden_checked */
-/* ETH_UPLINK builds add an extra %d for ap_channel */
+/* What the uplink is called wherever a build has to name it. */
 #if CONFIG_ETH_UPLINK
-#define CONFIG_CHUNK_AP_CHANNEL_ROW \
-"<tr><td>Channel</td><td><input type='number' name='ap_channel' min='0' max='13' value='%d' style='width:4em'/> <span style='color:#888;font-size:0.85rem;'>(0 = auto)</span></td></tr>"
+#define RC_UPLINK_LABEL "Ethernet"
 #else
-#define CONFIG_CHUNK_AP_CHANNEL_ROW ""
+#define RC_UPLINK_LABEL "WiFi"
 #endif
-#define CONFIG_CHUNK_AP "\
-<h2>Access Point Settings</h2>\
-<form action='' method='GET'>\
-<table>\
-<tr><td>SSID</td><td><input type='text' name='ap_ssid' value='%s' placeholder='Network name'/></td></tr>\
-<tr><td>Password</td><td><input type='password' id='ap_pw' name='ap_password' placeholder='unchanged' oninput=\"document.getElementById('ap_op').checked=false;\"/></td></tr>\
-<tr><td>AP IP Address</td><td><input type='text' name='ap_ip_addr' value='%s' placeholder='192.168.4.1'/></td></tr>\
-<tr><td>Hostname</td><td><input type='text' name='ap_hostname' value='%s' placeholder='esp32-nat-router' maxlength='32' pattern='[A-Za-z0-9-]*'/></td></tr>\
-<tr><td>DNS Server</td><td><input type='text' name='ap_dns' value='%s' placeholder='empty = use upstream DNS'/></td></tr>\
-<tr><td>MAC Address</td><td><input type='text' name='ap_mac' value='%s' placeholder='AA:BB:CC:DD:EE:FF'/></td></tr>\
-" CONFIG_CHUNK_AP_CHANNEL_ROW "\
-<tr><td>Security</td><td><select name='ap_auth'><option value='0' %s>WPA2/WPA3</option><option value='1' %s>WPA2 only</option><option value='2' %s>WPA3 only</option></select></td></tr>\
-<tr><td>NAT</td><td><input type='checkbox' name='ap_nat' value='1' %s> <span style='color:#888;font-size:0.85rem;'>Enabled (uncheck for routed mode)</span></td></tr>\
-<tr><td>Enabled</td><td><input type='checkbox' name='ap_enabled' value='1' %s> <span style='color:#888;font-size:0.85rem;'>AP interface active</span></td></tr>\
-<tr><td>Options</td><td><input type='checkbox' id='ap_op' name='ap_open' value='1' %s onchange=\"if(this.checked)document.getElementById('ap_pw').value='';\"> <span style='color:#888;font-size:0.85rem;'>Open (no password)</span> &nbsp; <input type='checkbox' name='ap_hidden' value='1' %s> <span style='color:#888;font-size:0.85rem;'>Hidden SSID</span></td></tr>\
-<tr><td></td><td><input type='submit' value='Save &amp; Reboot' class='ok-button'/></td></tr>\
-</table>\
-</form>"
 
-#if !CONFIG_ETH_UPLINK
-/* STA band preference row (5 GHz capable targets only) */
-/* Uses %s x3 for: auto_selected, 2.4_selected, 5_selected */
+#define CONFIG_OPEN "<div class=c>"
+#define CONFIG_CLOSE "</div>"
+
+/* Access point ------------------------------------------------------------
+ *
+ * Substitutes: ssid, address, hostname, DNS, MAC, [channel,] three auth
+ * selections, then the NAT / enabled / open / hidden checkbox states.
+ */
+#if CONFIG_ETH_UPLINK
+#define CONFIG_AP_CHANNEL "<label for=apc>Channel</label>" \
+    "<input id=apc type=number name=ap_channel min=0 max=13 value='%d'>" \
+    "<p class=hint>0 picks a channel automatically.</p>"
+#else
+#define CONFIG_AP_CHANNEL ""
+#endif
+
+#define CONFIG_AP "<details open><summary>Access point</summary>" \
+    "<form action=/config method=GET><div class=f>" \
+    "<label for=aps>Network name</label>" \
+    "<input id=aps type=text name=ap_ssid value='%s' placeholder='Hotspot name'>" \
+    "<label for=apw>Password</label>" \
+    "<input id=apw type=password name=ap_password placeholder='unchanged'>" \
+    "<label for=api>Router address</label>" \
+    "<input id=api type=text name=ap_ip_addr value='%s' placeholder='192.168.4.1'>" \
+    "<label for=aph>Hostname</label>" \
+    "<input id=aph type=text name=ap_hostname value='%s' " \
+    "placeholder='esp32-nat-router' maxlength=32 pattern='[A-Za-z0-9-]*'>" \
+    "<label for=apd>DNS server</label>" \
+    "<input id=apd type=text name=ap_dns value='%s' " \
+    "placeholder='empty follows the uplink'>" \
+    "<label for=apm>MAC address</label>" \
+    "<input id=apm type=text name=ap_mac value='%s' placeholder='AA:BB:CC:DD:EE:FF'>" \
+    CONFIG_AP_CHANNEL \
+    "<label for=apa>Security</label>" \
+    "<select id=apa name=ap_auth><option value=0 %s>WPA2 and WPA3</option>" \
+    "<option value=1 %s>WPA2 only</option>" \
+    "<option value=2 %s>WPA3 only</option></select>" \
+    "<label>Options</label><div>" \
+    "<label><input type=checkbox name=ap_nat value=1 %s>Share the uplink (NAT)</label><br>" \
+    "<label><input type=checkbox name=ap_enabled value=1 %s>Broadcast this network</label><br>" \
+    "<label><input type=checkbox id=apo name=ap_open value=1 %s>Open, no password</label><br>" \
+    "<label><input type=checkbox name=ap_hidden value=1 %s>Hide the name</label></div>" \
+    "<button class=\"b p act\" type=submit>Save and restart</button>" \
+    "</div></form></details>"
+
+/* Uplink ------------------------------------------------------------------ */
+
+#if CONFIG_ETH_UPLINK
+
+#define CONFIG_STA "<details><summary>Uplink</summary>" \
+    "<table class=\"t kv\"><tbody><tr><td>Mode</td><td>Ethernet (LAN8720)</td>" \
+    "</tr></tbody></table></details>"
+
+#else
+
 #if WIFI_HAS_5GHZ
-#define CONFIG_CHUNK_STA_BAND_ROW \
-"<tr><td>Band</td><td><select name='sta_band'>\
-<option value='0' %s>Auto (strongest signal)</option>\
-<option value='1' %s>2.4 GHz only</option>\
-<option value='2' %s>5 GHz only</option>\
-</select></td></tr>"
+/* Substitutes: three band selections. */
+#define CONFIG_STA_BAND "<label for=stb>Band</label>" \
+    "<select id=stb name=sta_band><option value=0 %s>Whichever is stronger</option>" \
+    "<option value=1 %s>2.4 GHz only</option>" \
+    "<option value=2 %s>5 GHz only</option></select>"
 #else
-#define CONFIG_CHUNK_STA_BAND_ROW ""
+#define CONFIG_STA_BAND ""
 #endif
 
-/* STA Settings section - uses %s for: ssid, ent_username, ent_identity,
-   eap_method selected x4, ttls_phase2 selected x4, cert_bundle checked, no_time_chk checked,
-   [if WIFI_HAS_5GHZ: band_auto_sel, band_2g_sel, band_5g_sel,]
-   sta_mac */
-#define CONFIG_CHUNK_STA "\
-<h2>Station Settings (Uplink)</h2>\
-<form action='' method='GET'>\
-<table>\
-<tr><td>SSID</td><td><input type='text' name='ssid' value='%s' placeholder='Uplink network'/></td></tr>\
-<tr><td>Password</td><td><input type='password' name='password' placeholder='unchanged'/></td></tr>\
-" CONFIG_CHUNK_STA_BAND_ROW "\
-<tr><td colspan='2' style='padding-top: 1rem; color: #888; font-size: 0.85rem;'>WPA2 Enterprise (optional)</td></tr>\
-<tr><td>Username</td><td><input type='text' name='ent_username' value='%s' placeholder='Enterprise username'/></td></tr>\
-<tr><td>Identity</td><td><input type='text' name='ent_identity' value='%s' placeholder='Optional (defaults to username)'/></td></tr>\
-<tr><td>EAP Method</td><td><select name='eap_method'>\
-<option value='0' %s>Auto</option>\
-<option value='1' %s>PEAP</option>\
-<option value='2' %s>TTLS</option>\
-<option value='3' %s>TLS</option>\
-</select></td></tr>\
-<tr><td>TTLS Phase 2</td><td><select name='ttls_phase2'>\
-<option value='0' %s>MSCHAPv2</option>\
-<option value='1' %s>MSCHAP</option>\
-<option value='2' %s>PAP</option>\
-<option value='3' %s>CHAP</option>\
-</select></td></tr>\
-<tr><td>Options</td><td>\
-<input type='checkbox' name='cert_bundle' value='1' %s> <span style='color:#888;font-size:0.85rem;'>Use CA cert bundle</span><br>\
-<input type='checkbox' name='no_time_chk' value='1' %s> <span style='color:#888;font-size:0.85rem;'>Skip cert time check</span>\
-</td></tr>\
-<tr><td>MAC Address</td><td><input type='text' name='sta_mac' value='%s' placeholder='AA:BB:CC:DD:EE:FF'/></td></tr>\
-<tr><td></td><td><input type='submit' value='Save &amp; Reboot' class='ok-button'/></td></tr>\
-</table>\
-</form>"
-#endif
+/* Substitutes: ssid, [three band selections,] username, identity, four TTLS
+ * selections, cert-bundle and time-check states, MAC.
+ *
+ * The EAP method dropdown that used to sit above TTLS Phase 2 is gone: the
+ * value was stored and displayed but never handed to esp_eap_client, which
+ * negotiates the method with the server itself. A control that cannot affect
+ * anything is worse than no control.
+ */
+#define CONFIG_STA "<details><summary>Uplink</summary>" \
+    "<form action=/config method=GET><div class=f>" \
+    "<label for=sts>Network name</label>" \
+    "<input id=sts type=text name=ssid value='%s' placeholder='Network to join'>" \
+    "<label for=stp>Password</label>" \
+    "<input id=stp type=password name=password placeholder='unchanged'>" \
+    CONFIG_STA_BAND \
+    "<p class=hint>Pick one from <a href=/scan>Scan</a> to fill this in.</p>" \
+    "<label for=stm>MAC address</label>" \
+    "<input id=stm type=text name=sta_mac value='%s' placeholder='AA:BB:CC:DD:EE:FF'>" \
+    "<p class=\"full n\" style=margin-top:8px>WPA2 Enterprise, if the network " \
+    "needs it</p>" \
+    "<label for=stu>Username</label>" \
+    "<input id=stu type=text name=ent_username value='%s' placeholder='optional'>" \
+    "<label for=sti>Identity</label>" \
+    "<input id=sti type=text name=ent_identity value='%s' " \
+    "placeholder='defaults to the username'>" \
+    "<label for=stt>TTLS phase 2</label>" \
+    "<select id=stt name=ttls_phase2><option value=0 %s>MSCHAPv2</option>" \
+    "<option value=1 %s>MSCHAP</option><option value=2 %s>PAP</option>" \
+    "<option value=3 %s>CHAP</option></select>" \
+    "<label>Certificates</label><div>" \
+    "<label><input type=checkbox name=cert_bundle value=1 %s>Trust the built-in CA bundle</label><br>" \
+    "<label><input type=checkbox name=no_time_chk value=1 %s>Skip the expiry check</label></div>" \
+    "<button class=\"b p act\" type=submit>Save and restart</button>" \
+    "</div></form></details>"
 
-/* Static IP section - uses %s for: static_ip, subnet_mask, gateway */
-#define CONFIG_CHUNK_STATIC "\
-<h2>Static IP Settings</h2>\
-<form action='' method='GET'>\
-<table>\
-<tr><td>Static IP</td><td><input type='text' name='staticip' value='%s' placeholder='192.168.1.100'/></td></tr>\
-<tr><td>Subnet Mask</td><td><input type='text' name='subnetmask' value='%s' placeholder='255.255.255.0'/></td></tr>\
-<tr><td>Gateway</td><td><input type='text' name='gateway' value='%s' placeholder='192.168.1.1'/></td></tr>\
-<tr><td></td><td><input type='submit' value='Save &amp; Reboot' class='ok-button'/></td></tr>\
-</table>\
-<small>Leave empty for DHCP</small>\
-</form>"
+#endif /* CONFIG_ETH_UPLINK */
 
-/* Remote Console section - uses: rc_en_chk, rc_dis_chk, rc_color, rc_status, rc_kick, rc_port, rc_ap_chk, rc_sta_chk, rc_vpn_chk, rc_timeout */
-#define CONFIG_CHUNK_RC "\
-<h2>Remote Console</h2>\
-<form action='' method='GET'>\
-<input type='hidden' name='rc_save' value='1'/>\
-<table>\
-<tr><td>Service</td><td>\
-<label style='margin-right: 1rem;'><input type='radio' name='rc_enabled' value='1' %s> Enabled</label>\
-<label><input type='radio' name='rc_enabled' value='0' %s> Disabled</label>\
-</td></tr>\
-<tr><td>Status</td><td><strong style='color: %s;'>%s</strong>%s</td></tr>\
-<tr><td>Port</td><td><input type='number' name='rc_port' value='%d' min='1' max='65535' style='width: 100px;'/></td></tr>\
-<tr><td>Bind Interfaces</td><td>\
-<label style='margin-right: 0.8rem;'><input type='checkbox' name='rc_bind_ap' value='1' %s> AP</label>\
-<label style='margin-right: 0.8rem;'><input type='checkbox' name='rc_bind_sta' value='1' %s> STA</label>\
-<label><input type='checkbox' name='rc_bind_vpn' value='1' %s> VPN</label>\
-</td></tr>\
-<tr><td>Idle Timeout</td><td><input type='number' name='rc_timeout' value='%lu' min='0' max='86400' style='width: 100px;'/> sec (0 = no)</td></tr>\
-<tr><td></td><td><input type='submit' value='Save' class='ok-button'/></td></tr>\
-</table>\
-</form>"
+/* Uplink addressing -------------------------------------------------------
+ * Substitutes: address, netmask, gateway. */
+#define CONFIG_STATIC "<details><summary>Uplink address</summary>" \
+    "<form action=/config method=GET><div class=f>" \
+    "<label for=sip>Address</label>" \
+    "<input id=sip type=text name=staticip value='%s' placeholder='from DHCP'>" \
+    "<label for=smk>Netmask</label>" \
+    "<input id=smk type=text name=subnetmask value='%s' placeholder='255.255.255.0'>" \
+    "<label for=sgw>Gateway</label>" \
+    "<input id=sgw type=text name=gateway value='%s' placeholder='192.168.1.1'>" \
+    "<p class=hint>Leave all three empty to use DHCP.</p>" \
+    "<button class=\"b p act\" type=submit>Save and restart</button>" \
+    "</div></form></details>"
 
-/* PCAP section - uses: pcap_off/acl/promisc_sel, pcap_color, pcap_status, captured, dropped, snaplen, sta_ip */
-#define CONFIG_CHUNK_PCAP "\
-<h2>PCAP Packet Capture</h2>\
-<form action='' method='GET'>\
-<input type='hidden' name='pcap_save' value='1'/>\
-<table>\
-<tr><td>Mode</td><td>\
-<select name='pcap_mode'>\
-<option value='off' %s>Off</option>\
-<option value='acl' %s>ACL Monitor</option>\
-<option value='promisc' %s>Promiscuous</option>\
-</select>\
-</td></tr>\
-<tr><td>Client</td><td><strong style='color: %s;'>%s</strong></td></tr>\
-<tr><td>Stats</td><td>%lu captured, %lu dropped</td></tr>\
-<tr><td>Snaplen</td><td><input type='text' name='pcap_snaplen' value='%d' placeholder='64-1600'/></td></tr>\
-<tr><td></td><td><input type='submit' value='Save' class='ok-button'/></td></tr>\
-</table>\
-<small>Connect using: nc %s 19000 | wireshark -k -i -</small>\
-</form>"
+/* Remote console ----------------------------------------------------------
+ * Substitutes: two service selections, status class, status text, the kick
+ * button (or an empty string), port, three bind states, idle timeout. */
+#define CONFIG_RC "<details><summary>Remote console</summary>" \
+    "<form action=/config method=GET><input type=hidden name=rc_save value=1>" \
+    "<div class=f>" \
+    "<label for=rce>Service</label>" \
+    "<select id=rce name=rc_enabled><option value=1 %s>Enabled</option>" \
+    "<option value=0 %s>Disabled</option></select>" \
+    "<label>Status</label><div><span class=\"%s\">%s</span>%s</div>" \
+    "<label for=rcp>Port</label>" \
+    "<input id=rcp type=number name=rc_port value='%d' min=1 max=65535>" \
+    "<label>Reachable on</label><div>" \
+    "<label><input type=checkbox name=rc_bind_ap value=1 %s>AP</label> " \
+    "<label><input type=checkbox name=rc_bind_sta value=1 %s>" RC_UPLINK_LABEL "</label> " \
+    "<label><input type=checkbox name=rc_bind_vpn value=1 %s>VPN</label></div>" \
+    "<label for=rct>Idle timeout</label>" \
+    "<input id=rct type=number name=rc_timeout value='%lu' min=0 max=86400>" \
+    "<p class=hint>Seconds before an idle session is dropped; 0 never drops one.</p>" \
+    "<button class=\"b p act\" type=submit>Save</button>" \
+    "</div></form></details>"
 
-/* Device management and footer */
-#define CONFIG_CHUNK_TAIL "\
-<h2>Device Management</h2>\
-<div id='mainContent'>\
-<h3 style='font-size:1rem;color:#aaa;margin:1rem 0 0.5rem;'>Firmware Update (OTA)</h3>"
+/* Packet capture ----------------------------------------------------------
+ * Substitutes: three mode selections, client class, client text, captured,
+ * dropped, snaplen, the address to point the capture tool at. */
+#define CONFIG_PCAP "<details><summary>Packet capture</summary>" \
+    "<form action=/config method=GET><input type=hidden name=pcap_save value=1>" \
+    "<div class=f>" \
+    "<label for=pcm>Mode</label>" \
+    "<select id=pcm name=pcap_mode><option value=off %s>Off</option>" \
+    "<option value=acl %s>Rules marked for capture</option>" \
+    "<option value=promisc %s>Everything</option></select>" \
+    "<label>Client</label><div><span class=\"%s\">%s</span></div>" \
+    "<label>Packets</label><div>%lu captured, %lu dropped</div>" \
+    "<label for=pcs>Bytes per packet</label>" \
+    "<input id=pcs type=number name=pcap_snaplen value='%d' min=64 max=1600>" \
+    "<p class=hint>Read it with <code>nc %s 19000 | wireshark -k -i -</code></p>" \
+    "<button class=\"b p act\" type=submit>Save</button>" \
+    "</div></form></details>"
 
-/* OTA info (running partition, version) is streamed dynamically here */
-#define CONFIG_CHUNK_TAIL2 "\
-<table>\
-<tr><td>Upload</td><td>\
-<label style='display:inline-block;padding:0.6rem 1rem;background:rgba(22,33,62,0.6);border:1px solid rgba(0,217,255,0.2);border-radius:8px;color:#e0e0e0;font-size:0.9rem;cursor:pointer;transition:all 0.3s;margin-bottom:0.5rem;'>\
-<input type='file' id='otaFile' accept='.bin' style='display:none;'/>\
-<span id='otaFileName'>Choose .bin file...</span>\
-</label><br/>\
-<button type='button' onclick='uploadOTA()' class='ok-button'>Upload Firmware</button>\
-<div id='otaProgress' style='margin-top:0.5rem;'>\
-<div id='otaBar' style='display:none;height:6px;background:rgba(0,217,255,0.2);border-radius:3px;overflow:hidden;'>\
-<div id='otaBarFill' style='height:100%;width:0;background:#00d9ff;transition:width 0.3s;'></div>\
-</div>\
-</div>\
-<div id='otaStatus' style='margin-top:0.5rem;font-size:0.9rem;'></div>\
-</td></tr>\
-</table>\
-<h3 style='font-size:1rem;color:#aaa;margin:1.5rem 0 0.5rem;'>Config Backup / Restore</h3>\
-<table>\
-<tr><td>Export</td><td>\
-<input type='password' id='expPass' placeholder='Passphrase (leave empty for plain)' style='width:100%;margin-bottom:0.4rem;background:rgba(22,33,62,0.6);border:1px solid rgba(0,217,255,0.2);border-radius:8px;color:#e0e0e0;padding:0.6rem;font-size:0.9rem;box-sizing:border-box;'/><br/>\
-<button type='button' onclick='downloadConfig()' class='ok-button'>Write Config</button>\
-<div id='exportStatus' style='margin-top:0.5rem;font-size:0.9rem;'></div>\
-</td></tr>\
-<tr><td>Import</td><td>\
-<input type='password' id='impPass' placeholder='Passphrase (if encrypted)' style='width:100%;margin-bottom:0.4rem;background:rgba(22,33,62,0.6);border:1px solid rgba(0,217,255,0.2);border-radius:8px;color:#e0e0e0;padding:0.6rem;font-size:0.9rem;box-sizing:border-box;'/><br/>\
-<label style='display:inline-block;padding:0.6rem 1rem;background:rgba(22,33,62,0.6);border:1px solid rgba(0,217,255,0.2);border-radius:8px;color:#e0e0e0;font-size:0.9rem;cursor:pointer;transition:all 0.3s;margin-bottom:0.5rem;'>\
-<input type='file' id='cfgFile' accept='.json' style='display:none;'/>\
-<span id='cfgFileName'>Choose file...</span>\
-</label><br/>\
-<button type='button' onclick='uploadConfig()' class='ok-button'>Read Config</button>\
-<div id='importStatus' style='margin-top:0.5rem;font-size:0.9rem;'></div>\
-</td></tr>\
-</table>\
-<h3 style='font-size:1rem;color:#aaa;margin:1.5rem 0 0.5rem;'>Reboot</h3>\
-<form action='' method='GET'>\
-<table>\
-<tr><td>Device</td><td><input type='submit' name='reset' value='Reboot Now' class='red-button'/></td></tr>\
-</table>\
-</form>\
-</div>\
-<div id='rebootScreen' style='display:none;text-align:center;padding:2rem 0;'>\
-<h2 style='color:#4caf50;margin-bottom:1rem;' id='rebootTitle'>Success</h2>\
-<p style='font-size:1.1rem;margin-bottom:0.5rem;' id='rebootMsg'>The device is rebooting...</p>\
-<p style='font-size:1.5rem;font-weight:bold;color:#00d9ff;' id='countdown'></p>\
-<p style='color:#888;font-size:0.9rem;'>Redirecting to home page...</p>\
-</div>\
-<script>\
-document.getElementById('otaFile').addEventListener('change',function(){document.getElementById('otaFileName').textContent=this.files[0]?this.files[0].name:'Choose .bin file...';});\
-function uploadOTA(){\
-var f=document.getElementById('otaFile').files[0];\
-if(!f){document.getElementById('otaStatus').textContent='Select a firmware file first.';return;}\
-if(!f.name.endsWith('.bin')){document.getElementById('otaStatus').innerHTML='<span style=\"color:#ff5252;\">Please select a .bin file</span>';return;}\
-document.getElementById('otaStatus').textContent='Uploading...';\
-document.getElementById('otaBar').style.display='block';\
-var xhr=new XMLHttpRequest();\
-xhr.open('POST','/api/ota-upload',true);\
-xhr.upload.onprogress=function(e){if(e.lengthComputable){var pct=Math.round(e.loaded/e.total*100);document.getElementById('otaBarFill').style.width=pct+'%';document.getElementById('otaStatus').textContent='Uploading... '+pct+'%';}};\
-xhr.onload=function(){\
-try{var d=JSON.parse(xhr.responseText);\
-if(d.ok){\
-document.getElementById('mainContent').style.display='none';\
-document.getElementById('rebootScreen').style.display='block';\
-document.getElementById('rebootTitle').textContent='Firmware Updated';\
-document.getElementById('rebootMsg').textContent='The device is rebooting with new firmware.';\
-var c=10;var el=document.getElementById('countdown');\
-var t=setInterval(function(){c--;el.textContent=c;if(c<=0){clearInterval(t);window.location.href='/';}},1000);\
-}else{\
-document.getElementById('otaBarFill').style.width='0';document.getElementById('otaBar').style.display='none';\
-document.getElementById('otaStatus').innerHTML='<span style=\"color:#ff5252;\">'+d.msg+'</span>';\
-}}catch(e){document.getElementById('otaStatus').innerHTML='<span style=\"color:#ff5252;\">Upload failed</span>';}\
-};\
-xhr.onerror=function(){document.getElementById('otaStatus').innerHTML='<span style=\"color:#ff5252;\">Connection error</span>';};\
-xhr.send(f);\
-}\
-document.getElementById('cfgFile').addEventListener('change',function(){document.getElementById('cfgFileName').textContent=this.files[0]?this.files[0].name:'Choose file...';});\
-function downloadConfig(){\
-var pass=document.getElementById('expPass').value;\
-document.getElementById('exportStatus').textContent='Downloading...';\
-fetch('/api/config-export',{method:'POST',body:JSON.stringify({pass:pass}),headers:{'Content-Type':'application/json'}})\
-.then(function(res){\
-if(!res.ok){return res.text().then(function(t){throw new Error(t);});}\
-var cd=res.headers.get('Content-Disposition')||'';\
-var fn='esp32_nat_config.json';\
-var m=cd.match(/filename=\"([^\"]+)\"/);\
-if(m)fn=m[1];\
-return res.blob().then(function(b){return{blob:b,fn:fn};});\
-})\
-.then(function(obj){\
-var url=URL.createObjectURL(obj.blob);\
-var a=document.createElement('a');\
-a.href=url;a.download=obj.fn;\
-document.body.appendChild(a);a.click();\
-setTimeout(function(){URL.revokeObjectURL(url);a.remove();},100);\
-document.getElementById('exportStatus').textContent=pass?'Downloaded (encrypted).':'Downloaded (plain).';\
-})\
-.catch(function(){document.getElementById('exportStatus').innerHTML='<span style=\"color:#ff5252;\">Export failed</span>';});\
-}\
-function uploadConfig(){\
-var f=document.getElementById('cfgFile').files[0];\
-var pass=document.getElementById('impPass').value;\
-if(!f){document.getElementById('importStatus').textContent='Select a file first.';return;}\
-var r=new FileReader();\
-r.onload=function(){\
-document.getElementById('importStatus').textContent='Uploading...';\
-var hdrs={'Content-Type':'application/json'};\
-if(pass)hdrs['X-Config-Pass']=pass;\
-fetch('/api/config-import',{method:'POST',body:r.result,headers:hdrs})\
-.then(function(res){return res.json();})\
-.then(function(d){\
-if(d.ok){\
-document.getElementById('mainContent').style.display='none';\
-document.getElementById('rebootScreen').style.display='block';\
-document.getElementById('rebootTitle').textContent='Config Imported';\
-document.getElementById('rebootMsg').textContent='The device is rebooting to apply the new configuration.';\
-var c=5;var el=document.getElementById('countdown');\
-var t=setInterval(function(){c--;el.textContent=c;if(c<=0){clearInterval(t);window.location.href='/';}},1000);\
-}else{\
-document.getElementById('importStatus').innerHTML='<span style=\"color:#ff5252;\">'+d.msg+'</span>';\
-}\
-});\
-};\
-r.readAsText(f);\
-}\
-</script>\
-"
+/* Firmware ----------------------------------------------------------------
+ * Substitutes: running partition, chip, version, build date, build time. */
+#define CONFIG_FIRMWARE "<details><summary>Firmware</summary>" \
+    "<table class=\"t kv\"><tbody>" \
+    "<tr><td>Running from</td><td>%s</td></tr>" \
+    "<tr><td>Chip</td><td>%s</td></tr>" \
+    "<tr><td>Version</td><td>%s</td></tr>" \
+    "<tr><td>Built</td><td>%s %s</td></tr>" \
+    "</tbody></table><div class=f>" \
+    "<label for=otf>New image</label>" \
+    "<input id=otf type=file accept=.bin>" \
+    "<button class=\"b p act\" type=button id=otb>Upload and restart</button>" \
+    "<p class=hint id=otm></p></div></details>"
 
-/* Danger Zone section - uses %s for: web_bind_ap_chk, web_bind_sta_chk, web_bind_vpn_chk.
- * ETH_UPLINK variant labels the uplink checkbox "ETH" instead of "STA". */
-#define CONFIG_CHUNK_DANGER_COMMON_HEAD "\
-<div style='margin-top: 2rem; padding: 1rem; background: #fff3cd; border: 2px solid #ff9800; border-radius: 8px;'>\
-<h2 style='color: #ff6b00; margin-bottom: 0.5rem;'>&#x26A0; Danger Zone</h2>\
-<h3 style='font-size:1rem;color:#cc6600;margin:0.75rem 0 0.5rem;'>Web UI Access</h3>\
-<p style='margin-bottom:0.75rem;color:#666;font-size:0.9rem;'>Restrict which network interface can reach the web UI. Unchecking the interface you are currently using will lock you out (re-enable via console: <code>web_ui bind all</code>).</p>\
-<form action='' method='GET'>\
-<input type='hidden' name='web_bind_save' value='1'/>\
-<table>\
-<tr><td style='color:#d32f2f;font-weight:bold;'>Interfaces</td><td>\
-<label style='margin-right:0.8rem;color:#666;'><input type='checkbox' name='web_bind_ap' value='1' %s> AP</label>"
+#define CONFIG_BACKUP "<details><summary>Backup and restore</summary>" \
+    "<div class=f>" \
+    "<label for=exp>Export passphrase</label>" \
+    "<input id=exp type=password placeholder='empty writes plain JSON'>" \
+    "<button class=\"b act\" type=button id=exb>Download settings</button>" \
+    "<p class=hint id=exm>Passwords and keys are only included when a " \
+    "passphrase encrypts the file.</p>" \
+    "<label for=imf>Settings file</label>" \
+    "<input id=imf type=file accept=.json>" \
+    "<label for=imp>Its passphrase</label>" \
+    "<input id=imp type=password placeholder='if it is encrypted'>" \
+    "<button class=\"b act\" type=button id=imb>Restore and restart</button>" \
+    "<p class=hint id=imm></p></div></details>"
 
-#define CONFIG_CHUNK_DANGER_COMMON_TAIL "\
-<label style='color:#666;'><input type='checkbox' name='web_bind_vpn' value='1' %s> VPN</label>\
-</td></tr>\
-<tr><td></td><td><input type='submit' value='Save' class='red-button' onclick='return confirm(\"Restricting access may lock you out. Continue?\");'/></td></tr>\
-</table>\
-</form>\
-<h3 style='font-size:1rem;color:#cc6600;margin:1.5rem 0 0.5rem;'>Disable Web Interface</h3>\
-<p style='margin-bottom:1rem;color:#666;font-size:0.9rem;'>Disables the web interface completely. Re-enable via console: <code>web_ui enable</code>.</p>\
-<form action='' method='GET'>\
-<table>\
-<tr><td style='color:#d32f2f;font-weight:bold;'>Disable</td>\
-<td><input type='submit' name='disable_interface' value='Disable' class='red-button' onclick='return confirm(\"Are you sure? The web interface will be disabled and can only be re-enabled via the console.\");'/></td></tr>\
-</table>\
-</form>\
-</div>\
-<div style='margin-top: 2rem; text-align: center;'>\
-<a href='/' style='padding: 0.75rem 2rem; background: linear-gradient(135deg, #667eea 0%%, #764ba2 100%%); color: #fff; border: none; border-radius: 8px; text-decoration: none; font-size: 0.95rem; font-weight: 600;'>&#127968; Home</a>\
-</div>\
-</div>\
-</body>\
-</html>"
-
-#if CONFIG_ETH_UPLINK
-/* ETH_UPLINK: uplink checkbox labeled "ETH" (maps to RC_BIND_STA / web_bind_sta) */
-#define CONFIG_CHUNK_DANGER \
-    CONFIG_CHUNK_DANGER_COMMON_HEAD \
-    "<label style='margin-right:0.8rem;color:#666;'><input type='checkbox' name='web_bind_sta' value='1' %s> ETH</label>" \
-    CONFIG_CHUNK_DANGER_COMMON_TAIL
-#else
-/* STA variant */
-#define CONFIG_CHUNK_DANGER \
-    CONFIG_CHUNK_DANGER_COMMON_HEAD \
-    "<label style='margin-right:0.8rem;color:#666;'><input type='checkbox' name='web_bind_sta' value='1' %s> STA</label>" \
-    CONFIG_CHUNK_DANGER_COMMON_TAIL
-#endif
-
+/* Reboot and access -------------------------------------------------------
+ * Substitutes: three web-bind states. */
+#define CONFIG_DANGER "<details><summary>Reboot and access</summary>" \
+    "<form action=/config method=GET><div class=f>" \
+    "<label>Restart</label>" \
+    "<button class=\"b d\" type=submit name=reset value=1 " \
+    "data-c='Restart the router now?'>Reboot</button>" \
+    "</div></form>" \
+    "<p class=\"al wn\">Both settings below can lock you out of this page. " \
+    "The console can undo either: <code>web_ui bind all</code> and " \
+    "<code>web_ui enable</code>.</p>" \
+    "<form action=/config method=GET>" \
+    "<input type=hidden name=web_bind_save value=1><div class=f>" \
+    "<label>Web UI reachable on</label><div>" \
+    "<label><input type=checkbox name=web_bind_ap value=1 %s>AP</label> " \
+    "<label><input type=checkbox name=web_bind_sta value=1 %s>" RC_UPLINK_LABEL "</label> " \
+    "<label><input type=checkbox name=web_bind_vpn value=1 %s>VPN</label></div>" \
+    "<button class=\"b d act\" type=submit " \
+    "data-c='Save? If you are not on one of the interfaces you ticked, this " \
+    "page becomes unreachable.'>Save access</button>" \
+    "</div></form>" \
+    "<form action=/config method=GET><div class=f>" \
+    "<label>Web UI</label>" \
+    "<button class=\"b d\" type=submit name=disable_interface value=1 " \
+    "data-c='Turn the web interface off? Only the console can turn it back " \
+    "on.'>Turn off</button>" \
+    "</div></form></details>"
