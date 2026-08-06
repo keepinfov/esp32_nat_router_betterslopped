@@ -112,12 +112,45 @@ Full documentation is available in the [Wiki](https://github.com/martin-ger/esp3
 
 ## Building from Source
 
-Needs ESP-IDF v5.5. On Debian and Ubuntu install `python3-venv` first —
-ESP-IDF's own `install.sh` fails without it, and not obviously.
+Needs ESP-IDF v5.5.
+
+### With Nix
+
+`flake.nix` provides a shell with the toolchain already set up — nothing to
+install, nothing to put on `PATH` by hand:
 
 ```bash
-. $IDF_PATH/export.sh          # once per shell
+git clone https://github.com/keepinfov/esp32_nat_router_betterslopped
+cd esp32_nat_router_betterslopped
+nix develop                    # or: nix-shell   (without flakes)
 ```
+
+That is the whole setup. `idf.py` is on `PATH` inside the shell and the build
+commands below work as written.
+
+The toolchains come from [nixpkgs-esp-dev](https://github.com/mirrexagon/nixpkgs-esp-dev),
+which pins ESP-IDF v5.5.2. This matters on NixOS specifically: ESP-IDF's own
+`install.sh` downloads prebuilt compilers linked against standard glibc paths
+that NixOS does not have, so the usual installation instructions cannot work
+there. Its chip list does not mention the ESP32-C5; the other six targets are
+covered, and the C5 uses the same RISC-V toolchain as the C3 and C6, so it is
+expected to work but has not been confirmed.
+
+If you use direnv, `echo 'use flake' > .envrc && direnv allow` enters the shell
+automatically.
+
+### Without Nix
+
+Install ESP-IDF v5.5 the usual way, then source it once per shell:
+
+```bash
+. $IDF_PATH/export.sh
+```
+
+On Debian and Ubuntu install `python3-venv` first — ESP-IDF's `install.sh`
+fails without it, and not obviously.
+
+### Building
 
 `build_all_targets.sh` builds a target and reports how much of the OTA slot
 the image uses. Builds are incremental and nothing in the repository is
