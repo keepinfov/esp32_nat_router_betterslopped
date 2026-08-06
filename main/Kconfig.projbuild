@@ -59,8 +59,9 @@ menu "MQTT Home Assistant"
         default y
         help
             Publishes router telemetry to an MQTT broker with
-            Home Assistant auto-discovery. Adds ~58 KB flash.
-            RAM is only used when a broker is configured and enabled.
+            Home Assistant auto-discovery. Costs 57.3 KB of flash, most of
+            it the MQTT client, TLS and TCP transport it pulls in behind
+            it. RAM is only used when a broker is configured and enabled.
 
     config MQTT_HA_BUFFER_SIZE
         int "MQTT buffer size (bytes)"
@@ -72,5 +73,51 @@ menu "MQTT Home Assistant"
         default 30
         depends on MQTT_HOMEASSISTANT
         range 5 3600
+
+endmenu
+
+menu "Optional subsystems"
+
+    # Each of these compiles to nothing when switched off: the component
+    # registers no sources and its header supplies do-nothing inlines, so no
+    # caller needs an #ifdef. Every figure below was measured on the ESP32-C3
+    # by building with that one option off, so it is the whole cost — the
+    # component plus whatever ESP-IDF drags in behind it. Turning off all
+    # five, MQTT included, frees 92.5 KB.
+
+    config REMOTE_CONSOLE
+        bool "Remote console over TCP"
+        default y
+        help
+            Serves the same command console as the serial port over TCP,
+            optionally password-protected. Turn it off if the router should
+            only be configurable from the web UI and the serial port.
+            Costs 5.5 KB of flash.
+
+    config PCAP_CAPTURE
+        bool "Packet capture"
+        default y
+        help
+            Streams captured packets to Wireshark over TCP port 19000, either
+            everything or only the traffic that firewall rules mark. A
+            diagnostic tool; nothing depends on it. Costs 4.7 KB of flash,
+            plus the capture ring buffer's RAM while it runs.
+
+    config SYSLOG_CLIENT
+        bool "Remote syslog"
+        default y
+        help
+            Forwards the router's own log to a syslog server over UDP.
+            Costs 3.1 KB of flash.
+
+    config OLED_DISPLAY
+        bool "OLED status display"
+        default y
+        depends on IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32S3
+        help
+            Drives an SSD1306 over I2C, showing SSIDs, addresses and client
+            count. Only useful on a board that has one wired up. Costs
+            18.8 KB of flash — the driver itself is small, the I2C
+            peripheral driver it pulls in behind it is not.
 
 endmenu

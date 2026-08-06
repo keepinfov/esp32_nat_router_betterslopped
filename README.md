@@ -298,6 +298,24 @@ network:
   never passed to the Wi-Fi stack, which negotiates the method with the server
   itself; the control could not affect anything.
 
+### Making the image smaller
+
+The firmware went from filling 99.4% of its OTA slot to 86.6% on the ESP32-C3,
+which matters because there was no room left to update it in place. If you need
+more, five subsystems can be left out of a build — they are under "Optional
+subsystems" in `idf.py menuconfig`, all on by default:
+
+| | Frees |
+|---|---|
+| MQTT / Home Assistant | 57.3 KB |
+| OLED status display | 18.8 KB |
+| Remote console (TCP) | 5.5 KB |
+| Packet capture | 4.7 KB |
+| Remote syslog | 3.1 KB |
+
+Turning off all five leaves 92.5 KB more, taking the C3 image to 80.6%. The
+figures are measured, not estimated: each is a build with that one option off.
+
 ## Licence
 
 The WireGuard submodul has the following licence_

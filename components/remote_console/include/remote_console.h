@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +62,8 @@ typedef struct {
  *
  * @return ESP_OK on success
  */
+#ifdef CONFIG_REMOTE_CONSOLE
+
 esp_err_t remote_console_init(void);
 
 /**
@@ -150,6 +153,55 @@ bool remote_console_session_active(void);
  * @return true if a command is executing via remote console
  */
 bool remote_console_is_capturing(void);
+
+#else /* !CONFIG_REMOTE_CONSOLE */
+
+/* Switched off: do-nothing inlines, so no caller needs an #ifdef.  Each getter
+ * reports what a subsystem that is present but idle would report, which every
+ * caller already handles. */
+
+static inline esp_err_t remote_console_init(void) { return ESP_OK; }
+static inline esp_err_t remote_console_enable(void) { return ESP_ERR_NOT_SUPPORTED; }
+static inline esp_err_t remote_console_disable(void) { return ESP_OK; }
+static inline esp_err_t remote_console_set_port(uint16_t port)
+{
+    (void)port;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+static inline esp_err_t remote_console_set_bind(uint8_t bind)
+{
+    (void)bind;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+static inline esp_err_t remote_console_set_timeout(uint32_t timeout_sec)
+{
+    (void)timeout_sec;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+static inline esp_err_t remote_console_kick(void) { return ESP_ERR_NOT_SUPPORTED; }
+static inline esp_err_t remote_console_get_config(remote_console_config_t *config)
+{
+    if (config) {
+        memset(config, 0, sizeof(*config));
+        config->bind = RC_BIND_AP;
+        config->port = REMOTE_CONSOLE_DEFAULT_PORT;
+        config->idle_timeout_sec = REMOTE_CONSOLE_DEFAULT_TIMEOUT;
+    }
+    return ESP_OK;
+}
+static inline esp_err_t remote_console_get_status(remote_console_status_t *status)
+{
+    if (status) {
+        memset(status, 0, sizeof(*status));
+        status->state = RC_STATE_DISABLED;
+    }
+    return ESP_OK;
+}
+static inline bool remote_console_is_enabled(void) { return false; }
+static inline bool remote_console_session_active(void) { return false; }
+static inline bool remote_console_is_capturing(void) { return false; }
+
+#endif /* CONFIG_REMOTE_CONSOLE */
 
 #ifdef __cplusplus
 }

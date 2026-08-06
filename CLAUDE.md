@@ -33,6 +33,43 @@ Two things cost more than they look: log strings — the shared
 out entirely — and anything embedded as a C array. Static web assets belong in
 `components/http_server/www/`, where the build gzips and embeds them.
 
+### No floating point in printf
+
+`sdkconfig.defaults` sets `LIBC_NEWLIB_NANO_FORMAT`, which links the
+printf/scanf already sitting in ROM. That build has neither floating-point nor
+64-bit conversions: a `%f` or a `%llu` compiles fine and prints nothing useful.
+Format tenths by hand (`"%u.%u", v / 10, v % 10`) — `format_bytes_human()` and
+`TX_DBM_WHOLE`/`TX_DBM_CENTS` in `router_config.h` are the existing examples.
+The C6 is the exception and turns the option back off: its ROM carries the full
+versions instead, so nano there adds a second copy rather than removing one.
+
+### Optimisation is split on purpose
+
+The global default is `-O2` (`COMPILER_OPTIMIZATION_PERF`). Components on the
+control plane — `main`, `http_server`, `cmd_router`, `cmd_system`, and the
+optional subsystems — override it to `-Os` in their own `CMakeLists.txt`. The
+packet path (`acl`, `dhcpserver`, `pcap_capture`) stays at `-O2`.
+
+Switching the global default to `-Os` measures 120 416 bytes smaller on the
+C3, and it is deliberately not done: it would take lwIP, the WiFi stack and the
+NAT hooks with it, and nobody has measured what that does to throughput. If
+you need the space, that is where it is — with an iperf3 run attached.
+
+### Leaving a subsystem out
+
+MQTT, the remote console, packet capture, syslog and the OLED driver each have
+a Kconfig option under "Optional subsystems", all default `y`. Turning one off
+compiles its component to nothing; its header supplies do-nothing inlines so no
+caller needs an `#ifdef`. Measured on the C3: MQTT 57.3 KB, OLED 18.8 KB,
+remote console 5.5 KB, packet capture 4.7 KB, syslog 3.1 KB.
+
+Two traps when adding another one. `REQUIRES` must stay unconditional —
+ESP-IDF collects component requirements before it reads sdkconfig, so a
+`CONFIG_`-dependent list comes out empty and the include paths vanish even in
+the build where the feature is on. And `target_compile_options(... PRIVATE)`
+has to be guarded too: a component with no sources is an INTERFACE target,
+where PRIVATE options are a CMake error.
+
 ## Building
 
 ```bash

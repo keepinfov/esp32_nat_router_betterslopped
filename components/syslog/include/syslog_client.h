@@ -20,6 +20,8 @@ extern "C" {
  * the vprintf hook if syslog was previously enabled.
  * Call after NVS init and network init.
  */
+#ifdef CONFIG_SYSLOG_CLIENT
+
 esp_err_t syslog_init(void);
 
 /**
@@ -49,6 +51,31 @@ void syslog_get_config(bool *enabled, char *server, size_t server_len, uint16_t 
  * and opens the UDP socket if syslog is enabled.
  */
 void syslog_notify_connected(void);
+
+#else /* !CONFIG_SYSLOG_CLIENT */
+
+/* Switched off: do-nothing inlines, so no caller needs an #ifdef.  Each getter
+ * reports what a subsystem that is present but idle would report, which every
+ * caller already handles. */
+
+static inline esp_err_t syslog_init(void) { return ESP_OK; }
+static inline esp_err_t syslog_enable(const char *server, uint16_t port)
+{
+    (void)server; (void)port;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+static inline esp_err_t syslog_disable(void) { return ESP_OK; }
+static inline bool syslog_is_enabled(void) { return false; }
+static inline void syslog_get_config(bool *enabled, char *server,
+                                     size_t server_len, uint16_t *port)
+{
+    if (enabled) *enabled = false;
+    if (server && server_len) server[0] = '\0';
+    if (port) *port = 0;
+}
+static inline void syslog_notify_connected(void) {}
+
+#endif /* CONFIG_SYSLOG_CLIENT */
 
 #ifdef __cplusplus
 }

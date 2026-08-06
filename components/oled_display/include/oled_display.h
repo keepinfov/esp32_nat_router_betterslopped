@@ -8,7 +8,10 @@
 extern "C" {
 #endif
 
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S3)
+/* CONFIG_OLED_DISPLAY already depends on the two targets that can have a
+ * display wired up, so it subsumes the target test this used to make — and it
+ * also lets a build on one of those targets leave the driver out. */
+#ifdef CONFIG_OLED_DISPLAY
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #define OLED_DEFAULT_SDA  17
@@ -48,7 +51,7 @@ void oled_display_set_gpio(int sda, int scl);
  */
 void oled_display_get_config(bool *enabled, int *sda, int *scl);
 
-#else /* !CONFIG_IDF_TARGET_ESP32C3 && !CONFIG_IDF_TARGET_ESP32S3 */
+#else /* !CONFIG_OLED_DISPLAY */
 
 static inline void oled_display_init(void) {}
 static inline void oled_display_enable(void) {}
@@ -60,7 +63,7 @@ static inline void oled_display_get_config(bool *enabled, int *sda, int *scl) {
     if (scl) *scl = 0;
 }
 
-#endif /* CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S3 */
+#endif /* CONFIG_OLED_DISPLAY */
 
 #ifdef __cplusplus
 }
