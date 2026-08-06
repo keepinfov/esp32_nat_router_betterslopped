@@ -21,11 +21,14 @@
 
 /* Substitutes: list description, list number, allowed, denied, no-match.
  * The Clear button is emitted before the counters it sits beside: a float that
- * follows text on the same line drops below it instead of pulling right. */
+ * follows text on the same line drops below it instead of pulling right.  It is
+ * a form rather than a link because it changes something, and it lives in a div
+ * rather than a p because a p is closed by the first block element inside it. */
 #define FIREWALL_LIST_OPEN "<div class=c><h2>%s</h2>" \
-    "<p class=n><a href=/firewall?clear_acl=%d class=\"b s d\" style=float:right " \
-    "data-c='Delete every rule in this list?'>Clear</a>" \
-    "%lu allowed &middot; %lu denied &middot; %lu unmatched</p>" \
+    "<div class=n><form method=post action=/firewall style=float:right>" \
+    "<button class=\"b s d\" name=clear_acl value=%d " \
+    "data-c='Delete every rule in this list?'>Clear</button></form>" \
+    "%lu allowed &middot; %lu denied &middot; %lu unmatched</div>" \
     "<div class=tw><table class=\"t r\"><thead><tr>" \
     "<th>Source</th><th>Destination</th><th>Protocol</th>" \
     "<th>Action</th><th>Hits</th><th></th>" \
@@ -39,7 +42,7 @@
 /* The direction options are filled in from acl_get_desc(), the same strings the
  * cards above and the console's "acl" command use — spelling them out a second
  * time here is how a renamed list ends up meaning two different things. */
-#define FIREWALL_ADD_OPEN "<form action=/firewall method=GET>" \
+#define FIREWALL_ADD_OPEN "<form action=/firewall method=POST>" \
     "<div class=c><h2>Add a rule</h2><div class=f>" \
     "<label for=fl>Direction</label><select id=fl name=acl_list>"
 

@@ -16,7 +16,7 @@
     "then tell it which WiFi to get its own internet from.</p>"
 
 /* Substitutes: escaped AP SSID, escaped uplink SSID. */
-#define SETUP_CHUNK_FORM "<form action=/setup method=GET>" \
+#define SETUP_CHUNK_FORM "<form action=/setup method=POST>" \
     "<div class=c><h2>Access point</h2><div class=f>" \
     "<label for=apn>Network name</label>" \
     "<input id=apn type=text name=ap_ssid value='%s' placeholder='Hotspot name'>" \

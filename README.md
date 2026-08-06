@@ -292,10 +292,13 @@ network:
   never passed to the Wi-Fi stack, which negotiates the method with the server
   itself; the control could not affect anything.
 
-One thing is still on the way: the pages that change settings still do so
-through GET requests, which a hostile website could trigger while you are
-logged in. Set a web UI password, and prefer binding the interface to the AP
-only, until that lands.
+- Changing a setting is a POST. It used to be a GET, which meant any page you
+  happened to be visiting could change one: an
+  `<img src="http://192.168.4.1/config?reset=1">` on some unrelated site is
+  enough, because your browser attaches the session cookie without asking and
+  a GET carries no `Origin` header to reject it by. Every form and every
+  Delete button posts now, and the request's origin is checked before
+  anything is written.
 
 ## Licence
 

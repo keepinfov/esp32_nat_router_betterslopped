@@ -17,7 +17,7 @@
 #define VPN_STATUS_OPEN "<div class=c><h2>Status</h2><table class=\"t kv\"><tbody>"
 #define VPN_STATUS_CLOSE "</tbody></table></div>"
 
-#define VPN_FORM_OPEN "<form action=/vpn method=GET>" \
+#define VPN_FORM_OPEN "<form action=/vpn method=POST>" \
     "<div class=c><h2>Tunnel</h2><div class=f>"
 
 /* Between this router's own settings and the remote peer's.  One card, two

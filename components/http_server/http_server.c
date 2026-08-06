@@ -345,6 +345,99 @@ static bool check_csrf(httpd_req_t *req)
     return false;
 }
 
+/* Pull the "error" parameter out of a request's query string, URL-decoded far
+ * enough to read and HTML-escaped for the page.
+ *
+ * A rejected form redirects back to its own page carrying the reason, so the
+ * reason arrives on a GET even though the change itself was a POST.  It is
+ * attacker-supplied by construction — anyone can hand an administrator a link
+ * with any text in it — which is why it is escaped rather than trusted. */
+static void read_error_param(httpd_req_t *req, char *out, size_t out_len)
+{
+    out[0] = '\0';
+    size_t qlen = httpd_req_get_url_query_len(req) + 1;
+    if (qlen <= 1) {
+        return;
+    }
+    char *q = malloc(qlen);
+    if (q == NULL) {
+        return;
+    }
+    char raw[128];
+    if (httpd_req_get_url_query_str(req, q, qlen) == ESP_OK &&
+        httpd_query_key_value(q, "error", raw, sizeof(raw)) == ESP_OK) {
+        for (char *p = raw; *p; p++) {
+            if (*p == '+') *p = ' ';
+        }
+        html_escape_to(out, out_len, raw);
+    }
+    free(q);
+}
+
+/* Read an application/x-www-form-urlencoded body into a heap buffer.
+ *
+ * A form body has exactly the syntax of a query string, so httpd_query_key_value()
+ * reads keys straight out of it — which is why moving the settings pages from GET
+ * to POST left their parsing untouched.
+ *
+ * Returns NULL for an absent, oversized or truncated body; the caller frees. */
+#define MAX_FORM_BODY 2048
+
+static char *read_form_body(httpd_req_t *req)
+{
+    if (req->content_len == 0 || req->content_len > MAX_FORM_BODY) {
+        return NULL;
+    }
+    char *body = malloc(req->content_len + 1);
+    if (body == NULL) {
+        return NULL;
+    }
+    size_t got = 0;
+    while (got < req->content_len) {
+        int r = httpd_req_recv(req, body + got, req->content_len - got);
+        /* recv_wait_timeout is two seconds and these bodies are a few hundred
+         * bytes on a local link, so a short read means the client is gone. */
+        if (r <= 0) {
+            free(body);
+            return NULL;
+        }
+        got += (size_t)r;
+    }
+    body[got] = '\0';
+    return body;
+}
+
+/* Accept a settings change, or answer the request and tell the caller to stop.
+ *
+ * Settings used to change on GET, which means any page the administrator
+ * happens to be visiting can change them: the browser attaches the session
+ * cookie to a cross-site <img src="http://192.168.4.1/config?reset=1"> without
+ * asking, and there is no Origin header on such a request to reject it by.
+ * A form POST always carries Origin, so check_csrf() has something to check.
+ *
+ * On a GET this returns true with *form NULL — the page renders, nothing
+ * changes.  On a POST it returns true with *form holding the body, or false
+ * having already sent the error response. */
+static bool take_form(httpd_req_t *req, char **form)
+{
+    *form = NULL;
+    if (req->method != HTTP_POST) {
+        return true;
+    }
+    if (!check_csrf(req)) {
+        { char _ip[16]; ESP_LOGW(TAG, "CSRF rejected %s from %s", req->uri,
+                                 get_client_ip(req, _ip, sizeof(_ip))); }
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Cross-site request rejected");
+        return false;
+    }
+    *form = read_form_body(req);
+    if (*form == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unreadable form data");
+        return false;
+    }
+    return true;
+}
+
 /* Check if request has valid session cookie */
 static bool is_authenticated(httpd_req_t *req)
 {
@@ -1362,56 +1455,35 @@ static esp_err_t send_page_foot(httpd_req_t *req)
 static esp_err_t index_get_handler(httpd_req_t *req)
 {
     resume_sta_if_scan_idle();
-    char* buf = NULL;
-    size_t buf_len = 0;
+    char *form = NULL;
     char param[128];
     char param2[128];
     char login_message[256] = "";
     bool authenticated = false;
     bool password_protection_enabled = is_web_password_set();
 
-    /* The login/password forms POST their fields (keeps the password out of the
-     * URL); nav links and logout use GET query params. Both arrive as
-     * key=value&key=value, so httpd_query_key_value() parses either. */
-    if (req->method == HTTP_POST) {
-        if (req->content_len > 0 && req->content_len < 1024) {
-            buf = malloc(req->content_len + 1);
-            if (buf != NULL) {
-                int recv_len = httpd_req_recv(req, buf, req->content_len);
-                if (recv_len > 0) {
-                    buf[recv_len] = '\0';
-                } else {
-                    free(buf);
-                    buf = NULL;
-                }
-            }
-        }
-    } else {
-        buf_len = httpd_req_get_url_query_len(req) + 1;
-        if (buf_len > 1) {
-            buf = malloc(buf_len);
-            if (buf != NULL && httpd_req_get_url_query_str(req, buf, buf_len) != ESP_OK) {
-                free(buf);
-                buf = NULL;
-            }
-        }
+    /* Signing in, signing out and changing the password all POST: it keeps the
+     * password out of the URL, and a POST is the only kind of request that
+     * carries an Origin header for check_csrf() to verify.  The one thing still
+     * read from the query string is auth_required=, which picks a message. */
+    if (!take_form(req, &form)) {
+        return ESP_OK;
     }
 
-    if (buf != NULL) {
-
+    if (form != NULL) {
             /* Handle logout */
-            if (httpd_query_key_value(buf, "logout", param, sizeof(param)) == ESP_OK) {
+            if (httpd_query_key_value(form, "logout", param, sizeof(param)) == ESP_OK) {
                 clear_session();
                 strcpy(login_message, "Logged out successfully.");
             }
 
             /* Handle login */
-            else if (httpd_query_key_value(buf, "login_password", param, sizeof(param)) == ESP_OK) {
+            else if (httpd_query_key_value(form, "login_password", param, sizeof(param)) == ESP_OK) {
                 preprocess_string(param);
                 if (password_protection_enabled && verify_web_password(param)) {
                     create_session(req);
                     { char _ip[16]; ESP_LOGI(TAG, "Web UI login successful from %s", get_client_ip(req, _ip, sizeof(_ip))); }
-                    free(buf);
+                    free(form);
                     /* Redirect to reload page with session cookie */
                     httpd_resp_set_status(req, "303 See Other");
                     httpd_resp_set_hdr(req, "Location", "/");
@@ -1424,23 +1496,20 @@ static esp_err_t index_get_handler(httpd_req_t *req)
                 }
             }
 
-            /* Handle password change */
-            else if (httpd_query_key_value(buf, "new_password", param, sizeof(param)) == ESP_OK &&
-                     httpd_query_key_value(buf, "confirm_password", param2, sizeof(param2)) == ESP_OK) {
+            /* Handle password change.  take_form() already ran the CSRF check
+             * that used to sit here, and it now covers login and logout too. */
+            else if (httpd_query_key_value(form, "new_password", param, sizeof(param)) == ESP_OK &&
+                     httpd_query_key_value(form, "confirm_password", param2, sizeof(param2)) == ESP_OK) {
                 preprocess_string(param);
                 preprocess_string(param2);
 
-                if (!check_csrf(req)) {
-                    { char _ip[16]; ESP_LOGW(TAG, "CSRF rejected password set from %s", get_client_ip(req, _ip, sizeof(_ip))); }
-                    strcpy(login_message, "ERROR: CSRF check failed.");
-                }
                 // Check if user is authenticated or no password is currently set
-                else if (is_authenticated(req) || !password_protection_enabled) {
+                if (is_authenticated(req) || !password_protection_enabled) {
                     if (strcmp(param, param2) == 0) {
                         esp_err_t err = set_web_password_hashed(param);
                         if (err == ESP_OK) {
                             clear_session();  // Force re-login with new password
-                            free(buf);
+                            free(form);
                             /* Redirect to reload page */
                             httpd_resp_set_status(req, "303 See Other");
                             httpd_resp_set_hdr(req, "Location", "/");
@@ -1458,13 +1527,14 @@ static esp_err_t index_get_handler(httpd_req_t *req)
                     strcpy(login_message, "ERROR: Not authorized to change password.");
                 }
             }
-
-            /* Check for auth_required flag */
-            else if (httpd_query_key_value(buf, "auth_required", param, sizeof(param)) == ESP_OK) {
-                strcpy(login_message, "Please log in to access that page.");
-            }
+    } else {
+        char query[96];
+        if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+            httpd_query_key_value(query, "auth_required", param, sizeof(param)) == ESP_OK) {
+            strcpy(login_message, "Please log in to access that page.");
+        }
     }
-    if (buf) free(buf);
+    free(form);
 
     /* Check current authentication status */
     authenticated = is_authenticated(req);
@@ -1697,42 +1767,35 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char*  buf;
-    size_t buf_len;
+    char *form;
+    if (!take_form(req, &form)) {
+        return ESP_OK;
+    }
     /* Set by every branch below that queues a restart, so the rendered page can
      * say so.  This used to be a script that matched the query string against a
      * list of field names and replaced document.body when one hit — which meant
      * the page claimed a reboot for any URL carrying, say, ?reset= . */
     bool restarting = false;
 
-    /* Read URL query string length and allocate memory for length + 1 */
-    buf_len = httpd_req_get_url_query_len(req) + 1;
-    if (buf_len > 1) {
-        buf = malloc(buf_len);
-        if (buf == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate memory for query string");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-            return ESP_ERR_NO_MEM;
-        }
-        if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            ESP_LOGI(TAG, "Found URL query => %s", buf);
+    if (form != NULL) {
+        {
             char reset_param[16];
-            if (httpd_query_key_value(buf, "reset", reset_param, sizeof(reset_param)) == ESP_OK) {
+            if (httpd_query_key_value(form, "reset", reset_param, sizeof(reset_param)) == ESP_OK) {
                 esp_timer_start_once(restart_timer, 500000);
                 restarting = true;
             }
 
             /* Handle Web UI bind interface settings */
             char param1[64];
-            if (httpd_query_key_value(buf, "web_bind_save", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "web_bind_save", param1, sizeof(param1)) == ESP_OK) {
                 uint8_t bind = 0;
-                if (httpd_query_key_value(buf, "web_bind_ap",  param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
-                if (httpd_query_key_value(buf, "web_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
-                if (httpd_query_key_value(buf, "web_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
+                if (httpd_query_key_value(form, "web_bind_ap",  param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
+                if (httpd_query_key_value(form, "web_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
+                if (httpd_query_key_value(form, "web_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
                 if (bind == 0) bind = RC_BIND_AP;
                 web_ui_set_bind(bind);
                 ESP_LOGI(TAG, "Web UI bind interfaces updated via web");
-                free(buf);
+                free(form);
                 httpd_resp_set_status(req, "303 See Other");
                 httpd_resp_set_hdr(req, "Location", "/config");
                 httpd_resp_send(req, NULL, 0);
@@ -1740,7 +1803,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             }
 
             /* Handle disable interface button */
-            if (strstr(buf, "disable_interface=") != NULL) {
+            if (strstr(form, "disable_interface=") != NULL) {
                 ESP_LOGI(TAG, "Disabling web interface");
                 if (set_config_param_str("web_disabled", "1") == ESP_OK) {
                     ESP_LOGI(TAG, "Web interface disabled. Use 'enable' command via serial to re-enable.");
@@ -1755,16 +1818,16 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             char param5[64];
 
             /* Handle AP settings with optional MAC and IP */
-            if (httpd_query_key_value(buf, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
                 ESP_LOGI(TAG, "Found URL query parameter => ap_ssid=%s", param1);
                 preprocess_string(param1);
-                if (httpd_query_key_value(buf, "ap_password", param2, sizeof(param2)) == ESP_OK) {
+                if (httpd_query_key_value(form, "ap_password", param2, sizeof(param2)) == ESP_OK) {
                     preprocess_string(param2);
 
                     // "Open network" checkbox overrides password to empty
                     {
                         char open_val[4] = "";
-                        if (httpd_query_key_value(buf, "ap_open", open_val, sizeof(open_val)) == ESP_OK) {
+                        if (httpd_query_key_value(form, "ap_open", open_val, sizeof(open_val)) == ESP_OK) {
                             param2[0] = '\0';
                         } else if (strlen(param2) == 0) {
                             // Keep existing password if field was left empty
@@ -1781,7 +1844,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     set_ap(argc, argv);
 
                     // Check for optional AP IP address
-                    if (httpd_query_key_value(buf, "ap_ip_addr", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
+                    if (httpd_query_key_value(form, "ap_ip_addr", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
                         ESP_LOGI(TAG, "Found URL query parameter => ap_ip_addr=%s", param3);
                         preprocess_string(param3);
                         char* ip_argv[2];
@@ -1792,7 +1855,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 
                     // Check for optional hostname (mDNS / DHCP name).
                     // set_hostname validates (RFC 952) and updates the global.
-                    if (httpd_query_key_value(buf, "ap_hostname", param4, sizeof(param4)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "ap_hostname", param4, sizeof(param4)) == ESP_OK) {
                         ESP_LOGI(TAG, "Found URL query parameter => ap_hostname=%s", param4);
                         char* host_argv[2];
                         host_argv[0] = "set_hostname";
@@ -1803,7 +1866,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     // Check for optional AP DNS server
                     {
                         char dns_param[64];
-                        if (httpd_query_key_value(buf, "ap_dns", dns_param, sizeof(dns_param)) == ESP_OK) {
+                        if (httpd_query_key_value(form, "ap_dns", dns_param, sizeof(dns_param)) == ESP_OK) {
                             preprocess_string(dns_param);
                             ESP_LOGI(TAG, "Found URL query parameter => ap_dns=%s", dns_param);
                             set_config_param_str("ap_dns", dns_param);
@@ -1813,7 +1876,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     }
 
                     // Check for optional AP MAC address
-                    if (httpd_query_key_value(buf, "ap_mac", param4, sizeof(param4)) == ESP_OK && strlen(param4) > 0) {
+                    if (httpd_query_key_value(form, "ap_mac", param4, sizeof(param4)) == ESP_OK && strlen(param4) > 0) {
                         ESP_LOGI(TAG, "Found URL query parameter => ap_mac=%s", param4);
                         preprocess_string(param4);
                         // Parse MAC address string (format: AA:BB:CC:DD:EE:FF)
@@ -1836,7 +1899,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     // Handle AP enabled/disabled setting
                     // Checkbox sends value only when checked, so absence means "disabled"
                     {
-                        bool ap_en = (httpd_query_key_value(buf, "ap_enabled", param5, sizeof(param5)) == ESP_OK);
+                        bool ap_en = (httpd_query_key_value(form, "ap_enabled", param5, sizeof(param5)) == ESP_OK);
                         set_config_param_int("ap_disabled", ap_en ? 0 : 1);
                         ap_disabled = !ap_en;
                         ESP_LOGI(TAG, "AP interface %s", ap_en ? "enabled" : "disabled");
@@ -1844,7 +1907,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 
                     // Handle AP NAT setting (checkbox: present = on, absent = off)
                     {
-                        int nat_val = (httpd_query_key_value(buf, "ap_nat", param5, sizeof(param5)) == ESP_OK) ? 1 : 0;
+                        int nat_val = (httpd_query_key_value(form, "ap_nat", param5, sizeof(param5)) == ESP_OK) ? 1 : 0;
                         set_config_param_int("ap_nat", nat_val);
                         ap_nat_enabled = (uint8_t)nat_val;
                         ESP_LOGI(TAG, "AP NAT %s", nat_val ? "enabled" : "disabled");
@@ -1854,7 +1917,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     // Checkbox sends value only when checked, so absence means "off"
                     {
                         int hidden_val = 0;
-                        if (httpd_query_key_value(buf, "ap_hidden", param5, sizeof(param5)) == ESP_OK) {
+                        if (httpd_query_key_value(form, "ap_hidden", param5, sizeof(param5)) == ESP_OK) {
                             hidden_val = 1;
                             ESP_LOGI(TAG, "Found URL query parameter => ap_hidden=%s", param5);
                         }
@@ -1864,7 +1927,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     }
 
                     // Handle AP auth mode setting
-                    if (httpd_query_key_value(buf, "ap_auth", param5, sizeof(param5)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "ap_auth", param5, sizeof(param5)) == ESP_OK) {
                         int auth_val = atoi(param5);
                         if (auth_val >= 0 && auth_val <= 2) {
                             set_config_param_int("ap_authmode", auth_val);
@@ -1875,7 +1938,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 
 #if CONFIG_ETH_UPLINK
                     // Handle AP channel setting (ETH_UPLINK only)
-                    if (httpd_query_key_value(buf, "ap_channel", param5, sizeof(param5)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "ap_channel", param5, sizeof(param5)) == ESP_OK) {
                         int channel_val = atoi(param5);
                         if (channel_val >= 0 && channel_val <= 13) {
                             set_config_param_int("ap_channel", channel_val);
@@ -1892,20 +1955,20 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 
 #if !CONFIG_ETH_UPLINK
             /* Handle STA settings with optional MAC */
-            if (httpd_query_key_value(buf, "ssid", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "ssid", param1, sizeof(param1)) == ESP_OK) {
                 ESP_LOGI(TAG, "Found URL query parameter => ssid=%s", param1);
                 preprocess_string(param1);
-                if (httpd_query_key_value(buf, "password", param2, sizeof(param2)) == ESP_OK) {
+                if (httpd_query_key_value(form, "password", param2, sizeof(param2)) == ESP_OK) {
                     preprocess_string(param2);
 
                     // Keep existing password if field was left empty
                     if (strlen(param2) == 0) {
                         strlcpy(param2, passwd, sizeof(param2));
                     }
-                    if (httpd_query_key_value(buf, "ent_username", param3, sizeof(param3)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "ent_username", param3, sizeof(param3)) == ESP_OK) {
                         ESP_LOGI(TAG, "Found URL query parameter => ent_username=%s", param3);
                         preprocess_string(param3);
-                        if (httpd_query_key_value(buf, "ent_identity", param4, sizeof(param4)) == ESP_OK) {
+                        if (httpd_query_key_value(form, "ent_identity", param4, sizeof(param4)) == ESP_OK) {
                             ESP_LOGI(TAG, "Found URL query parameter => ent_identity=%s", param4);
                             preprocess_string(param4);
 
@@ -1933,7 +1996,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                             {
                                 char phase2_param[4] = "";
                                 int phase2_val = 0;
-                                if (httpd_query_key_value(buf, "ttls_phase2", phase2_param, sizeof(phase2_param)) == ESP_OK) {
+                                if (httpd_query_key_value(form, "ttls_phase2", phase2_param, sizeof(phase2_param)) == ESP_OK) {
                                     phase2_val = atoi(phase2_param);
                                 }
                                 set_config_param_int("ttls_phase2", phase2_val);
@@ -1942,14 +2005,14 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                                 // Checkboxes: present = 1, absent = 0
                                 char cb_param[4] = "";
                                 int cb_val = 0;
-                                if (httpd_query_key_value(buf, "cert_bundle", cb_param, sizeof(cb_param)) == ESP_OK) {
+                                if (httpd_query_key_value(form, "cert_bundle", cb_param, sizeof(cb_param)) == ESP_OK) {
                                     cb_val = 1;
                                 }
                                 set_config_param_int("cert_bundle", cb_val);
                                 use_cert_bundle = cb_val;
 
                                 int tc_val = 0;
-                                if (httpd_query_key_value(buf, "no_time_chk", cb_param, sizeof(cb_param)) == ESP_OK) {
+                                if (httpd_query_key_value(form, "no_time_chk", cb_param, sizeof(cb_param)) == ESP_OK) {
                                     tc_val = 1;
                                 }
                                 set_config_param_int("no_time_chk", tc_val);
@@ -1961,7 +2024,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                             {
                                 char band_param[4] = "";
                                 int band_val = STA_BAND_AUTO;
-                                if (httpd_query_key_value(buf, "sta_band", band_param, sizeof(band_param)) == ESP_OK) {
+                                if (httpd_query_key_value(form, "sta_band", band_param, sizeof(band_param)) == ESP_OK) {
                                     band_val = atoi(band_param);
                                     if (band_val < STA_BAND_AUTO || band_val > STA_BAND_5G)
                                         band_val = STA_BAND_AUTO;
@@ -1972,7 +2035,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 #endif
 
                             // Check for optional STA MAC address
-                            if (httpd_query_key_value(buf, "sta_mac", param5, sizeof(param5)) == ESP_OK && strlen(param5) > 0) {
+                            if (httpd_query_key_value(form, "sta_mac", param5, sizeof(param5)) == ESP_OK && strlen(param5) > 0) {
                                 ESP_LOGI(TAG, "Found URL query parameter => sta_mac=%s", param5);
                                 preprocess_string(param5);
                                 // Parse MAC address string (format: AA:BB:CC:DD:EE:FF)
@@ -2001,13 +2064,13 @@ static esp_err_t config_get_handler(httpd_req_t *req)
 #endif
 
             /* Handle static IP settings */
-            if (httpd_query_key_value(buf, "staticip", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "staticip", param1, sizeof(param1)) == ESP_OK) {
                 ESP_LOGI(TAG, "Found URL query parameter => staticip=%s", param1);
                 preprocess_string(param1);
-                if (httpd_query_key_value(buf, "subnetmask", param2, sizeof(param2)) == ESP_OK) {
+                if (httpd_query_key_value(form, "subnetmask", param2, sizeof(param2)) == ESP_OK) {
                     ESP_LOGI(TAG, "Found URL query parameter => subnetmask=%s", param2);
                     preprocess_string(param2);
-                    if (httpd_query_key_value(buf, "gateway", param3, sizeof(param3)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "gateway", param3, sizeof(param3)) == ESP_OK) {
                         ESP_LOGI(TAG, "Found URL query parameter => gateway=%s", param3);
                         preprocess_string(param3);
                         int argc = 4;
@@ -2023,10 +2086,24 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                 }
             }
 
+            /* Handle Remote Console kick.
+             * Tested before the settings save below: the Disconnect button
+             * lives inside the settings form, so a click on it carries
+             * rc_save=1 as well and the save would answer first. */
+            if (httpd_query_key_value(form, "rc_kick", param1, sizeof(param1)) == ESP_OK) {
+                remote_console_kick();
+                ESP_LOGI(TAG, "Remote console session kicked via web");
+                free(form);
+                httpd_resp_set_status(req, "303 See Other");
+                httpd_resp_set_hdr(req, "Location", "/config");
+                httpd_resp_send(req, NULL, 0);
+                return ESP_OK;
+            }
+
             /* Handle Remote Console settings (single form) */
-            if (httpd_query_key_value(buf, "rc_save", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "rc_save", param1, sizeof(param1)) == ESP_OK) {
                 /* Enable/disable */
-                if (httpd_query_key_value(buf, "rc_enabled", param1, sizeof(param1)) == ESP_OK) {
+                if (httpd_query_key_value(form, "rc_enabled", param1, sizeof(param1)) == ESP_OK) {
                     preprocess_string(param1);
                     if (strcmp(param1, "1") == 0) {
                         remote_console_enable();
@@ -2035,7 +2112,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     }
                 }
                 /* Port */
-                if (httpd_query_key_value(buf, "rc_port", param1, sizeof(param1)) == ESP_OK) {
+                if (httpd_query_key_value(form, "rc_port", param1, sizeof(param1)) == ESP_OK) {
                     preprocess_string(param1);
                     int port = atoi(param1);
                     if (port >= 1 && port <= 65535) {
@@ -2044,13 +2121,13 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                 }
                 /* Bind interfaces (checkboxes: absent = unchecked) */
                 uint8_t bind = 0;
-                if (httpd_query_key_value(buf, "rc_bind_ap", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
-                if (httpd_query_key_value(buf, "rc_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
-                if (httpd_query_key_value(buf, "rc_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
+                if (httpd_query_key_value(form, "rc_bind_ap", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_AP;
+                if (httpd_query_key_value(form, "rc_bind_sta", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_STA;
+                if (httpd_query_key_value(form, "rc_bind_vpn", param1, sizeof(param1)) == ESP_OK) bind |= RC_BIND_VPN;
                 if (bind == 0) bind = RC_BIND_AP;
                 remote_console_set_bind(bind);
                 /* Timeout */
-                if (httpd_query_key_value(buf, "rc_timeout", param1, sizeof(param1)) == ESP_OK) {
+                if (httpd_query_key_value(form, "rc_timeout", param1, sizeof(param1)) == ESP_OK) {
                     preprocess_string(param1);
                     int timeout = atoi(param1);
                     if (timeout >= 0) {
@@ -2058,18 +2135,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     }
                 }
                 ESP_LOGI(TAG, "Remote console settings saved via web");
-                free(buf);
-                httpd_resp_set_status(req, "303 See Other");
-                httpd_resp_set_hdr(req, "Location", "/config");
-                httpd_resp_send(req, NULL, 0);
-                return ESP_OK;
-            }
-
-            /* Handle Remote Console kick */
-            if (httpd_query_key_value(buf, "rc_kick", param1, sizeof(param1)) == ESP_OK) {
-                remote_console_kick();
-                ESP_LOGI(TAG, "Remote console session kicked via web");
-                free(buf);
+                free(form);
                 httpd_resp_set_status(req, "303 See Other");
                 httpd_resp_set_hdr(req, "Location", "/config");
                 httpd_resp_send(req, NULL, 0);
@@ -2077,8 +2143,8 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             }
 
             /* Handle PCAP settings (single form) */
-            if (httpd_query_key_value(buf, "pcap_save", param1, sizeof(param1)) == ESP_OK) {
-                if (httpd_query_key_value(buf, "pcap_mode", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "pcap_save", param1, sizeof(param1)) == ESP_OK) {
+                if (httpd_query_key_value(form, "pcap_mode", param1, sizeof(param1)) == ESP_OK) {
                     preprocess_string(param1);
                     if (strcmp(param1, "off") == 0) {
                         pcap_set_mode(PCAP_MODE_OFF);
@@ -2088,7 +2154,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                         pcap_set_mode(PCAP_MODE_PROMISCUOUS);
                     }
                 }
-                if (httpd_query_key_value(buf, "pcap_snaplen", param1, sizeof(param1)) == ESP_OK) {
+                if (httpd_query_key_value(form, "pcap_snaplen", param1, sizeof(param1)) == ESP_OK) {
                     preprocess_string(param1);
                     int snaplen = atoi(param1);
                     if (snaplen >= 64 && snaplen <= 1600) {
@@ -2096,29 +2162,30 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                     }
                 }
                 ESP_LOGI(TAG, "PCAP settings saved via web");
-                free(buf);
+                free(form);
                 httpd_resp_set_status(req, "303 See Other");
                 httpd_resp_set_hdr(req, "Location", "/config");
                 httpd_resp_send(req, NULL, 0);
                 return ESP_OK;
             }
         }
-        free(buf);
+        free(form);
     }
 
 #if !CONFIG_ETH_UPLINK
-    /* Check for SSID pre-fill from scan page */
+    /* Check for SSID pre-fill from the scan page.  A read, so it stays on the
+     * query string: /config?ssid=... only fills a field in. */
     char prefill_ssid[64] = "";
-    buf_len = httpd_req_get_url_query_len(req) + 1;
-    if (buf_len > 1) {
-        buf = malloc(buf_len);
-        if (buf != NULL && httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            if (httpd_query_key_value(buf, "ssid", prefill_ssid, sizeof(prefill_ssid)) == ESP_OK) {
+    size_t query_len = httpd_req_get_url_query_len(req) + 1;
+    if (query_len > 1) {
+        char *query = malloc(query_len);
+        if (query != NULL) {
+            if (httpd_req_get_url_query_str(req, query, query_len) == ESP_OK &&
+                httpd_query_key_value(query, "ssid", prefill_ssid, sizeof(prefill_ssid)) == ESP_OK) {
                 preprocess_string(prefill_ssid);
-                ESP_LOGI(TAG, "Pre-filling SSID from scan: %s", prefill_ssid);
             }
+            free(query);
         }
-        if (buf) free(buf);
     }
 
     /* Escape values into stack buffers and release the heap copies immediately.
@@ -2258,8 +2325,12 @@ static esp_err_t config_get_handler(httpd_req_t *req)
                 break;
             case RC_STATE_ACTIVE:
                 rc_class = "bd ok"; rc_text = rc_status.client_ip;
-                rc_kick = " <a href=/config?rc_kick=1 class=\"b s d\" "
-                          "data-c='Disconnect the console session?'>Disconnect</a>";
+                /* A plain button in the surrounding settings form, not a
+                 * form of its own: a nested <form> is dropped by the parser
+                 * and its button silently submits the outer one instead. */
+                rc_kick = " <button class=\"b s d\" name=rc_kick value=1 "
+                          "data-c='Disconnect the console session?'>Disconnect"
+                          "</button>";
                 break;
             case RC_STATE_DISABLED:
                 rc_class = "n"; rc_text = "Disabled";
@@ -2359,6 +2430,14 @@ static httpd_uri_t configp = {
     .handler   = config_get_handler,
 };
 
+/* Same function for both verbs: GET renders the page, POST applies the form
+ * and then renders it. */
+static httpd_uri_t configp_post = {
+    .uri       = "/config",
+    .method    = HTTP_POST,
+    .handler   = config_get_handler,
+};
+
 /* Mappings page GET handler (DHCP Reservations + Port Forwarding) - Chunked transfer */
 static esp_err_t mappings_get_handler(httpd_req_t *req)
 {
@@ -2375,46 +2454,29 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char* buf;
-    size_t buf_len;
+    char *form;
+    if (!take_form(req, &form)) {
+        return ESP_OK;
+    }
     char error_msg[128] = "";
 
-    /* Read URL query string length and allocate memory for length + 1 */
-    buf_len = httpd_req_get_url_query_len(req) + 1;
-    if (buf_len > 1) {
-        buf = malloc(buf_len);
-        if (buf == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate memory for query string");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-            return ESP_ERR_NO_MEM;
-        }
+    /* The error message rides the query string of the redirect that a rejected
+     * entry sends; everything that changes state comes out of the POST body. */
+    read_error_param(req, error_msg, sizeof(error_msg));
 
-        if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            ESP_LOGI(TAG, "Found URL query => %s", buf);
-
+    if (form != NULL) {
+        {
             char param1[64];
             char param2[64];
             char param3[64];
             char param4[64];
 
-            /* Check for error parameter first */
-            if (httpd_query_key_value(buf, "error", param1, sizeof(param1)) == ESP_OK) {
-                /* Decode + back to spaces */
-                for (char *p = param1; *p; p++) {
-                    if (*p == '+') *p = ' ';
-                }
-                /* Reflected straight back into the page below, so it has to be
-                 * escaped here — the value comes from the URL, which anyone can
-                 * craft and hand to an admin. */
-                html_escape_to(error_msg, sizeof(error_msg), param1);
-            }
-
             /* Check for add DHCP reservation */
-            if (httpd_query_key_value(buf, "dhcp_action", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "dhcp_action", param1, sizeof(param1)) == ESP_OK) {
                 bool is_block = (strcmp(param1, "Block") == 0);
                 if (strcmp(param1, "Add+Reservation") == 0 || strcmp(param1, "Add Reservation") == 0 || is_block) {
-                    if (httpd_query_key_value(buf, "dhcp_mac", param1, sizeof(param1)) == ESP_OK &&
-                        httpd_query_key_value(buf, "dhcp_ip", param2, sizeof(param2)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "dhcp_mac", param1, sizeof(param1)) == ESP_OK &&
+                        httpd_query_key_value(form, "dhcp_ip", param2, sizeof(param2)) == ESP_OK) {
 
                         preprocess_string(param1);
                         preprocess_string(param2);
@@ -2441,7 +2503,7 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
                                 err_msg = "IP must be in the same network as the AP";
                             } else {
                                 const char *name = NULL;
-                                if (httpd_query_key_value(buf, "dhcp_name", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
+                                if (httpd_query_key_value(form, "dhcp_name", param3, sizeof(param3)) == ESP_OK && strlen(param3) > 0) {
                                     preprocess_string(param3);
                                     name = param3;
                                 }
@@ -2460,7 +2522,7 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
                             httpd_resp_set_status(req, "303 See Other");
                             httpd_resp_set_hdr(req, "Location", redirect_url);
                             httpd_resp_send(req, NULL, 0);
-                            free(buf);
+                            free(form);
                             return ESP_OK;
                         }
                     }
@@ -2468,7 +2530,7 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
             }
 
             /* Check for delete DHCP reservation */
-            if (httpd_query_key_value(buf, "del_dhcp_mac", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "del_dhcp_mac", param1, sizeof(param1)) == ESP_OK) {
                 preprocess_string(param1);
                 unsigned int mac[6];
                 if (sscanf(param1, "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -2485,12 +2547,12 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
             }
 
             /* Check for add port mapping */
-            if (httpd_query_key_value(buf, "port_action", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "port_action", param1, sizeof(param1)) == ESP_OK) {
                 if (strcmp(param1, "Add+Forward") == 0 || strcmp(param1, "Add Forward") == 0) {
-                    if (httpd_query_key_value(buf, "proto", param1, sizeof(param1)) == ESP_OK &&
-                        httpd_query_key_value(buf, "ext_port", param2, sizeof(param2)) == ESP_OK &&
-                        httpd_query_key_value(buf, "int_ip", param3, sizeof(param3)) == ESP_OK &&
-                        httpd_query_key_value(buf, "int_port", param4, sizeof(param4)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "proto", param1, sizeof(param1)) == ESP_OK &&
+                        httpd_query_key_value(form, "ext_port", param2, sizeof(param2)) == ESP_OK &&
+                        httpd_query_key_value(form, "int_ip", param3, sizeof(param3)) == ESP_OK &&
+                        httpd_query_key_value(form, "int_port", param4, sizeof(param4)) == ESP_OK) {
 
                         preprocess_string(param3);
                         uint8_t proto = (strcmp(param1, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
@@ -2530,7 +2592,7 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
                         if (err_msg == NULL) {
                             uint8_t iface = 0;  // Default: STA
                             char iface_param[8];
-                            if (httpd_query_key_value(buf, "iface", iface_param, sizeof(iface_param)) == ESP_OK) {
+                            if (httpd_query_key_value(form, "iface", iface_param, sizeof(iface_param)) == ESP_OK) {
                                 if (strcmp(iface_param, "VPN") == 0) iface = 1;
                             }
                             add_portmap(proto, ext_port, int_ip, int_port, iface);
@@ -2552,7 +2614,7 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
                             httpd_resp_set_status(req, "303 See Other");
                             httpd_resp_set_hdr(req, "Location", redirect_url);
                             httpd_resp_send(req, NULL, 0);
-                            free(buf);
+                            free(form);
                             return ESP_OK;
                         }
                     }
@@ -2560,15 +2622,15 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
             }
 
             /* Check for delete port mapping */
-            if (httpd_query_key_value(buf, "del_proto", param1, sizeof(param1)) == ESP_OK &&
-                httpd_query_key_value(buf, "del_port", param2, sizeof(param2)) == ESP_OK) {
+            if (httpd_query_key_value(form, "del_proto", param1, sizeof(param1)) == ESP_OK &&
+                httpd_query_key_value(form, "del_port", param2, sizeof(param2)) == ESP_OK) {
                 uint8_t proto = (strcmp(param1, "TCP") == 0) ? PROTO_TCP : PROTO_UDP;
                 uint16_t port = atoi(param2);
                 del_portmap(proto, port);
                 ESP_LOGI(TAG, "Deleted port mapping: %s %d", param1, port);
             }
         }
-        free(buf);
+        free(form);
     }
 
     /* Reusable buffers.  Stack, not heap: a SEND_CHUNK bail-out on a dead
@@ -2708,8 +2770,9 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
 
         n = snprintf(row, sizeof(row),
             "<tr><td>%s</td><td>%s</td><td>%s</td>"
-            "<td class=a><a href='/mappings?del_dhcp_mac=%s' class=\"b s d\" "
-            "data-c='Delete this reservation?'>Delete</a></td></tr>",
+            "<td class=a><form method=post action=/mappings>"
+            "<button class=\"b s d\" name=del_dhcp_mac value='%s' "
+            "data-c='Delete this reservation?'>Delete</button></form></td></tr>",
             mac_str, ip_col, esc[0] ? esc : "unnamed", mac_str);
         SEND_RENDERED(req, row, n);
     }
@@ -2747,8 +2810,10 @@ static esp_err_t mappings_get_handler(httpd_req_t *req)
 
             n = snprintf(row, sizeof(row),
                 "<tr><td>%s %u</td><td>%s:%u</td><td>%s</td>"
-                "<td class=a><a href='/mappings?del_proto=%s&amp;del_port=%u' "
-                "class=\"b s d\" data-c='Delete this forward?'>Delete</a></td></tr>",
+                "<td class=a><form method=post action=/mappings>"
+                "<input type=hidden name=del_proto value=%s>"
+                "<button class=\"b s d\" name=del_port value=%u "
+                "data-c='Delete this forward?'>Delete</button></form></td></tr>",
                 proto, (unsigned)portmap_tab[i].mport,
                 esc, (unsigned)portmap_tab[i].dport,
                 portmap_tab[i].iface == 1 ? "VPN" : PORTMAP_IFACE_WAN,
@@ -2783,6 +2848,14 @@ static httpd_uri_t mappingsp = {
     .handler   = mappings_get_handler,
 };
 
+/* Same function for both verbs: GET renders the page, POST applies the form
+ * and then renders it. */
+static httpd_uri_t mappingsp_post = {
+    .uri       = "/mappings",
+    .method    = HTTP_POST,
+    .handler   = mappings_get_handler,
+};
+
 /* Firewall (ACL) page GET handler */
 static esp_err_t firewall_get_handler(httpd_req_t *req)
 {
@@ -2799,48 +2872,32 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char* buf;
-    size_t buf_len;
+    char *form;
+    if (!take_form(req, &form)) {
+        return ESP_OK;
+    }
     bool action_performed = false;
     char error_msg[128] = "";
 
-    /* Read URL query string length and allocate memory for length + 1 */
-    buf_len = httpd_req_get_url_query_len(req) + 1;
-    if (buf_len > 1) {
-        buf = malloc(buf_len);
-        if (buf == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate memory for query string");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-            return ESP_ERR_NO_MEM;
-        }
+    /* The error message rides the query string of the redirect that a rejected
+     * rule sends; everything that changes state comes out of the POST body. */
+    read_error_param(req, error_msg, sizeof(error_msg));
 
-        if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            ESP_LOGI(TAG, "Firewall query => %s", buf);
-
+    if (form != NULL) {
+        {
             char param[64];
 
-            /* Check for error parameter first */
-            char error_param[128];
-            if (httpd_query_key_value(buf, "error", error_param, sizeof(error_param)) == ESP_OK) {
-                /* Decode + back to spaces */
-                for (char *p = error_param; *p; p++) {
-                    if (*p == '+') *p = ' ';
-                }
-                /* Reflected straight back into the page below — escape it. */
-                html_escape_to(error_msg, sizeof(error_msg), error_param);
-            }
-
             /* Handle Add Rule */
-            if (httpd_query_key_value(buf, "acl_action", param, sizeof(param)) == ESP_OK) {
+            if (httpd_query_key_value(form, "acl_action", param, sizeof(param)) == ESP_OK) {
                 if (strcmp(param, "Add+Rule") == 0 || strcmp(param, "Add Rule") == 0) {
                     char list_str[8], proto_str[8], src_ip_str[32], src_port_str[8];
                     char dst_ip_str[32], dst_port_str[8], action_str[8];
 
-                    if (httpd_query_key_value(buf, "acl_list", list_str, sizeof(list_str)) == ESP_OK &&
-                        httpd_query_key_value(buf, "proto", proto_str, sizeof(proto_str)) == ESP_OK &&
-                        httpd_query_key_value(buf, "src_ip", src_ip_str, sizeof(src_ip_str)) == ESP_OK &&
-                        httpd_query_key_value(buf, "dst_ip", dst_ip_str, sizeof(dst_ip_str)) == ESP_OK &&
-                        httpd_query_key_value(buf, "action", action_str, sizeof(action_str)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "acl_list", list_str, sizeof(list_str)) == ESP_OK &&
+                        httpd_query_key_value(form, "proto", proto_str, sizeof(proto_str)) == ESP_OK &&
+                        httpd_query_key_value(form, "src_ip", src_ip_str, sizeof(src_ip_str)) == ESP_OK &&
+                        httpd_query_key_value(form, "dst_ip", dst_ip_str, sizeof(dst_ip_str)) == ESP_OK &&
+                        httpd_query_key_value(form, "action", action_str, sizeof(action_str)) == ESP_OK) {
 
                         preprocess_string(src_ip_str);
                         preprocess_string(dst_ip_str);
@@ -2883,13 +2940,13 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
 
                         /* Parse ports */
                         uint16_t s_port = 0, d_port = 0;
-                        if (httpd_query_key_value(buf, "src_port", src_port_str, sizeof(src_port_str)) == ESP_OK) {
+                        if (httpd_query_key_value(form, "src_port", src_port_str, sizeof(src_port_str)) == ESP_OK) {
                             preprocess_string(src_port_str);
                             if (strcmp(src_port_str, "*") != 0 && strlen(src_port_str) > 0) {
                                 s_port = atoi(src_port_str);
                             }
                         }
-                        if (httpd_query_key_value(buf, "dst_port", dst_port_str, sizeof(dst_port_str)) == ESP_OK) {
+                        if (httpd_query_key_value(form, "dst_port", dst_port_str, sizeof(dst_port_str)) == ESP_OK) {
                             preprocess_string(dst_port_str);
                             if (strcmp(dst_port_str, "*") != 0 && strlen(dst_port_str) > 0) {
                                 d_port = atoi(dst_port_str);
@@ -2907,7 +2964,7 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
                             httpd_resp_set_status(req, "303 See Other");
                             httpd_resp_set_hdr(req, "Location", redirect_url);
                             httpd_resp_send(req, NULL, 0);
-                            free(buf);
+                            free(form);
                             return ESP_OK;
                         }
 
@@ -2923,10 +2980,10 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
             }
 
             /* Handle Delete Rule */
-            if (httpd_query_key_value(buf, "del_acl", param, sizeof(param)) == ESP_OK) {
+            if (httpd_query_key_value(form, "del_acl", param, sizeof(param)) == ESP_OK) {
                 uint8_t list_no = atoi(param);
                 char idx_str[8];
-                if (httpd_query_key_value(buf, "del_idx", idx_str, sizeof(idx_str)) == ESP_OK) {
+                if (httpd_query_key_value(form, "del_idx", idx_str, sizeof(idx_str)) == ESP_OK) {
                     uint8_t rule_idx = atoi(idx_str);
                     if (list_no < MAX_ACL_LISTS && acl_delete(list_no, rule_idx)) {
                         save_acl_rules();
@@ -2937,7 +2994,7 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
             }
 
             /* Handle Clear List */
-            if (httpd_query_key_value(buf, "clear_acl", param, sizeof(param)) == ESP_OK) {
+            if (httpd_query_key_value(form, "clear_acl", param, sizeof(param)) == ESP_OK) {
                 uint8_t list_no = atoi(param);
                 if (list_no < MAX_ACL_LISTS) {
                     acl_clear(list_no);
@@ -2947,7 +3004,7 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
                 }
             }
         }
-        free(buf);
+        free(form);
     }
 
     /* Redirect after action to prevent duplicate submissions on refresh */
@@ -3062,8 +3119,10 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
             n = snprintf(row, sizeof(row),
                 "<tr><td>%s:%s</td><td>%s:%s</td><td>%s</td>"
                 "<td><span class=\"bd %s\">%s</span></td><td>%lu hits</td>"
-                "<td class=a><a href='/firewall?del_acl=%d&amp;del_idx=%d' "
-                "class=\"b s d\" data-c='Delete this rule?'>Delete</a></td></tr>",
+                "<td class=a><form method=post action=/firewall>"
+                "<input type=hidden name=del_acl value=%d>"
+                "<button class=\"b s d\" name=del_idx value=%d "
+                "data-c='Delete this rule?'>Delete</button></form></td></tr>",
                 src_esc, s_port_str, dst_esc, d_port_str, proto_str,
                 action == ACL_ALLOW ? "ok" : "er", action_str,
                 (unsigned long)rules_copy[i].hit_count,
@@ -3099,6 +3158,14 @@ static esp_err_t firewall_get_handler(httpd_req_t *req)
 static httpd_uri_t firewallp = {
     .uri       = "/firewall",
     .method    = HTTP_GET,
+    .handler   = firewall_get_handler,
+};
+
+/* Same function for both verbs: GET renders the page, POST applies the form
+ * and then renders it. */
+static httpd_uri_t firewallp_post = {
+    .uri       = "/firewall",
+    .method    = HTTP_POST,
     .handler   = firewall_get_handler,
 };
 
@@ -3311,22 +3378,24 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
+    char *form;
+    if (!take_form(req, &form)) {
+        return ESP_OK;
+    }
+
     char param1[64], param2[64];
 
     /* Set when this request armed the restart timer, so the page can say so
      * instead of a script guessing from the query string. */
     bool restarting = false;
 
-    /* Handle form submission */
-    size_t buf_len = httpd_req_get_url_query_len(req) + 1;
-    if (buf_len > 1) {
-        char *buf = malloc(buf_len);
-        if (buf != NULL && httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+    if (form != NULL) {
+        {
 
             /* Handle AP settings */
-            if (httpd_query_key_value(buf, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "ap_ssid", param1, sizeof(param1)) == ESP_OK) {
                 preprocess_string(param1);
-                if (httpd_query_key_value(buf, "ap_password", param2, sizeof(param2)) == ESP_OK) {
+                if (httpd_query_key_value(form, "ap_password", param2, sizeof(param2)) == ESP_OK) {
                     preprocess_string(param2);
                     if (strlen(param2) == 0) {
                         strlcpy(param2, ap_passwd, sizeof(param2));
@@ -3352,9 +3421,9 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
 
 #if !CONFIG_ETH_UPLINK
             /* Handle STA settings */
-            if (httpd_query_key_value(buf, "ssid", param1, sizeof(param1)) == ESP_OK) {
+            if (httpd_query_key_value(form, "ssid", param1, sizeof(param1)) == ESP_OK) {
                 preprocess_string(param1);
-                if (httpd_query_key_value(buf, "password", param2, sizeof(param2)) == ESP_OK) {
+                if (httpd_query_key_value(form, "password", param2, sizeof(param2)) == ESP_OK) {
                     preprocess_string(param2);
                     if (strlen(param2) == 0) {
                         strlcpy(param2, passwd, sizeof(param2));
@@ -3382,21 +3451,23 @@ static esp_err_t setup_get_handler(httpd_req_t *req)
             }
 #endif
         }
-        free(buf);
+        free(form);
     }
 
 #if !CONFIG_ETH_UPLINK
-    /* Check for SSID pre-fill from scan page */
+    /* Check for SSID pre-fill from the scan page.  A read, so it stays on the
+     * query string: /setup?ssid=... only fills a field in. */
     char prefill_ssid[64] = "";
-    buf_len = httpd_req_get_url_query_len(req) + 1;
-    if (buf_len > 1) {
-        char *buf = malloc(buf_len);
-        if (buf != NULL && httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            if (httpd_query_key_value(buf, "ssid", prefill_ssid, sizeof(prefill_ssid)) == ESP_OK) {
+    size_t query_len = httpd_req_get_url_query_len(req) + 1;
+    if (query_len > 1) {
+        char *query = malloc(query_len);
+        if (query != NULL) {
+            if (httpd_req_get_url_query_str(req, query, query_len) == ESP_OK &&
+                httpd_query_key_value(query, "ssid", prefill_ssid, sizeof(prefill_ssid)) == ESP_OK) {
                 preprocess_string(prefill_ssid);
             }
+            free(query);
         }
-        if (buf) free(buf);
     }
 #endif
 
@@ -3431,6 +3502,14 @@ static httpd_uri_t setupp = {
     .method    = HTTP_GET,
     .handler   = setup_get_handler,
 };
+
+/* Same function for both verbs: GET renders the page, POST applies the form
+ * and then renders it. */
+static httpd_uri_t setupp_post = {
+    .uri       = "/setup",
+    .method    = HTTP_POST,
+    .handler   = setup_get_handler,
+};
 #endif /* !CONFIG_ETH_UPLINK */
 
 /* VPN page GET handler */
@@ -3448,66 +3527,63 @@ static esp_err_t vpn_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char* buf = NULL;
-    size_t buf_len;
+    char *form;
+    if (!take_form(req, &form)) {
+        return ESP_OK;
+    }
     bool saved = false;
 
-    /* Read URL query string */
-    buf_len = httpd_req_get_url_query_len(req) + 1;
-    if (buf_len > 1) {
-        buf = malloc(buf_len);
-        if (buf != NULL && httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            ESP_LOGI(TAG, "VPN query => %s", buf);
-
+    if (form != NULL) {
+        {
             char param[128];
 
             /* Check if this is a form submission */
-            if (httpd_query_key_value(buf, "vpn_enabled", param, sizeof(param)) == ESP_OK) {
+            if (httpd_query_key_value(form, "vpn_enabled", param, sizeof(param)) == ESP_OK) {
                 saved = true;
                 nvs_handle_t nvs;
                 if (nvs_open(PARAM_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
                     nvs_set_i32(nvs, "vpn_enabled", atoi(param));
 
-                    if (httpd_query_key_value(buf, "vpn_privkey", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_privkey", param, sizeof(param)) == ESP_OK) {
                         preprocess_string(param);
                         if (param[0] != '\0')
                             nvs_set_str(nvs, "vpn_privkey", param);
                     }
-                    if (httpd_query_key_value(buf, "vpn_pubkey", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_pubkey", param, sizeof(param)) == ESP_OK) {
                         preprocess_string(param);
                         nvs_set_str(nvs, "vpn_pubkey", param);
                     }
-                    if (httpd_query_key_value(buf, "vpn_psk", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_psk", param, sizeof(param)) == ESP_OK) {
                         preprocess_string(param);
                         if (param[0] != '\0')
                             nvs_set_str(nvs, "vpn_psk", param);
                     }
-                    if (httpd_query_key_value(buf, "vpn_endpoint", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_endpoint", param, sizeof(param)) == ESP_OK) {
                         preprocess_string(param);
                         nvs_set_str(nvs, "vpn_endpoint", param);
                     }
-                    if (httpd_query_key_value(buf, "vpn_port", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_port", param, sizeof(param)) == ESP_OK) {
                         nvs_set_i32(nvs, "vpn_port", atoi(param));
                     }
-                    if (httpd_query_key_value(buf, "vpn_ip", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_ip", param, sizeof(param)) == ESP_OK) {
                         preprocess_string(param);
                         nvs_set_str(nvs, "vpn_ip", param);
                     }
-                    if (httpd_query_key_value(buf, "vpn_mask", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_mask", param, sizeof(param)) == ESP_OK) {
                         preprocess_string(param);
                         nvs_set_str(nvs, "vpn_mask", param);
                     }
-                    if (httpd_query_key_value(buf, "vpn_dns", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_dns", param, sizeof(param)) == ESP_OK) {
                         preprocess_string(param);
                         nvs_set_str(nvs, "vpn_dns", param);
                     }
-                    if (httpd_query_key_value(buf, "vpn_ka", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_ka", param, sizeof(param)) == ESP_OK) {
                         nvs_set_i32(nvs, "vpn_ka", atoi(param));
                     }
-                    if (httpd_query_key_value(buf, "vpn_ks", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_ks", param, sizeof(param)) == ESP_OK) {
                         nvs_set_i32(nvs, "vpn_ks", atoi(param));
                     }
-                    if (httpd_query_key_value(buf, "vpn_rall", param, sizeof(param)) == ESP_OK) {
+                    if (httpd_query_key_value(form, "vpn_rall", param, sizeof(param)) == ESP_OK) {
                         nvs_set_i32(nvs, "vpn_rall", atoi(param));
                     }
 
@@ -3518,7 +3594,7 @@ static esp_err_t vpn_get_handler(httpd_req_t *req)
                 }
             }
         }
-        if (buf) free(buf);
+        free(form);
     }
 
     /* Reusable buffers for the page rows.
@@ -3695,6 +3771,14 @@ static httpd_uri_t vpnp = {
     .handler   = vpn_get_handler,
 };
 
+/* Same function for both verbs: GET renders the page, POST applies the form
+ * and then renders it. */
+static httpd_uri_t vpnp_post = {
+    .uri       = "/vpn",
+    .method    = HTTP_POST,
+    .handler   = vpn_get_handler,
+};
+
 static esp_err_t captive_redirect_handler(httpd_req_t *req, httpd_err_code_t err);
 
 httpd_handle_t start_webserver(uint16_t port)
@@ -3703,10 +3787,11 @@ httpd_handle_t start_webserver(uint16_t port)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = port;
     config.stack_size = 16384;  // Large stack needed for mappings page with 3x 2KB HTML buffers
-    /* Pages, the JSON APIs, and the three static assets (/app.css, /app.js,
-     * /favicon.svg plus the /favicon.png alias). Registration fails silently
-     * past this limit, so it has to stay ahead of the list below. */
-    config.max_uri_handlers = 18;
+    /* Pages (each settings page twice: GET to render, POST to apply), the JSON
+     * APIs, and the three static assets (/app.css, /app.js, /favicon.svg plus
+     * the /favicon.png alias). Registration fails silently past this limit, so
+     * it has to stay ahead of the list below. */
+    config.max_uri_handlers = 24;
     config.max_uri_len = 1024;
     config.open_fn = http_open_fn;
     /* Fail a stalled send/recv fast (default 5s) so an abandoned connection
@@ -3741,14 +3826,19 @@ httpd_handle_t start_webserver(uint16_t port)
         httpd_register_uri_handler(server, &indexp);
         httpd_register_uri_handler(server, &indexp_post);
         httpd_register_uri_handler(server, &configp);
+        httpd_register_uri_handler(server, &configp_post);
         httpd_register_uri_handler(server, &mappingsp);
+        httpd_register_uri_handler(server, &mappingsp_post);
         httpd_register_uri_handler(server, &firewallp);
+        httpd_register_uri_handler(server, &firewallp_post);
 #if !CONFIG_ETH_UPLINK
         httpd_register_uri_handler(server, &scanp);
 #endif
         httpd_register_uri_handler(server, &vpnp);
+        httpd_register_uri_handler(server, &vpnp_post);
 #if !CONFIG_ETH_UPLINK
         httpd_register_uri_handler(server, &setupp);
+        httpd_register_uri_handler(server, &setupp_post);
 #endif
         httpd_register_uri_handler(server, &favicon_uri);
         httpd_register_uri_handler(server, &favicon_png_uri);

@@ -44,7 +44,7 @@
 #endif
 
 #define CONFIG_AP "<details open><summary>Access point</summary>" \
-    "<form action=/config method=GET><div class=f>" \
+    "<form action=/config method=POST><div class=f>" \
     "<label for=aps>Network name</label>" \
     "<input id=aps type=text name=ap_ssid value='%s' placeholder='Hotspot name'>" \
     "<label for=apw>Password</label>" \
@@ -101,7 +101,7 @@
  * anything is worse than no control.
  */
 #define CONFIG_STA "<details><summary>Uplink</summary>" \
-    "<form action=/config method=GET><div class=f>" \
+    "<form action=/config method=POST><div class=f>" \
     "<label for=sts>Network name</label>" \
     "<input id=sts type=text name=ssid value='%s' placeholder='Network to join'>" \
     "<label for=stp>Password</label>" \
@@ -132,7 +132,7 @@
 /* Uplink addressing -------------------------------------------------------
  * Substitutes: address, netmask, gateway. */
 #define CONFIG_STATIC "<details><summary>Uplink address</summary>" \
-    "<form action=/config method=GET><div class=f>" \
+    "<form action=/config method=POST><div class=f>" \
     "<label for=sip>Address</label>" \
     "<input id=sip type=text name=staticip value='%s' placeholder='from DHCP'>" \
     "<label for=smk>Netmask</label>" \
@@ -147,7 +147,7 @@
  * Substitutes: two service selections, status class, status text, the kick
  * button (or an empty string), port, three bind states, idle timeout. */
 #define CONFIG_RC "<details><summary>Remote console</summary>" \
-    "<form action=/config method=GET><input type=hidden name=rc_save value=1>" \
+    "<form action=/config method=POST><input type=hidden name=rc_save value=1>" \
     "<div class=f>" \
     "<label for=rce>Service</label>" \
     "<select id=rce name=rc_enabled><option value=1 %s>Enabled</option>" \
@@ -169,7 +169,7 @@
  * Substitutes: three mode selections, client class, client text, captured,
  * dropped, snaplen, the address to point the capture tool at. */
 #define CONFIG_PCAP "<details><summary>Packet capture</summary>" \
-    "<form action=/config method=GET><input type=hidden name=pcap_save value=1>" \
+    "<form action=/config method=POST><input type=hidden name=pcap_save value=1>" \
     "<div class=f>" \
     "<label for=pcm>Mode</label>" \
     "<select id=pcm name=pcap_mode><option value=off %s>Off</option>" \
@@ -214,7 +214,7 @@
 /* Reboot and access -------------------------------------------------------
  * Substitutes: three web-bind states. */
 #define CONFIG_DANGER "<details><summary>Reboot and access</summary>" \
-    "<form action=/config method=GET><div class=f>" \
+    "<form action=/config method=POST><div class=f>" \
     "<label>Restart</label>" \
     "<button class=\"b d\" type=submit name=reset value=1 " \
     "data-c='Restart the router now?'>Reboot</button>" \
@@ -222,7 +222,7 @@
     "<p class=\"al wn\">Both settings below can lock you out of this page. " \
     "The console can undo either: <code>web_ui bind all</code> and " \
     "<code>web_ui enable</code>.</p>" \
-    "<form action=/config method=GET>" \
+    "<form action=/config method=POST>" \
     "<input type=hidden name=web_bind_save value=1><div class=f>" \
     "<label>Web UI reachable on</label><div>" \
     "<label><input type=checkbox name=web_bind_ap value=1 %s>AP</label> " \
@@ -232,7 +232,7 @@
     "data-c='Save? If you are not on one of the interfaces you ticked, this " \
     "page becomes unreachable.'>Save access</button>" \
     "</div></form>" \
-    "<form action=/config method=GET><div class=f>" \
+    "<form action=/config method=POST><div class=f>" \
     "<label>Web UI</label>" \
     "<button class=\"b d\" type=submit name=disable_interface value=1 " \
     "data-c='Turn the web interface off? Only the console can turn it back " \

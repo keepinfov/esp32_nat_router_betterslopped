@@ -176,6 +176,11 @@ input::placeholder { color: var(--fg2); opacity: .75 }
    used inside cells and inline in spans alike. */
 .n { color: var(--fg2) }
 
+/* A row's Delete button is a one-button form, because deleting something
+   over GET is a link any other page can follow on the administrator's
+   behalf. The form must not claim a line of its own. */
+td form { display: inline }
+
 /* Key/value readouts reuse .t with the label column muted. */
 .t.kv td:first-child { color: var(--fg2); width: 40% }
 

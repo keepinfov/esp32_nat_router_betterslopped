@@ -44,7 +44,7 @@
  * "Block" needs no IP: the handler ignores the address field entirely for that
  * action, which is why the button no longer carries an onclick that zeroes it
  * first. */
-#define MAPPINGS_DHCP_FORM "<form action=/mappings method=GET>" \
+#define MAPPINGS_DHCP_FORM "<form action=/mappings method=POST>" \
     "<div class=c><h2>Add a reservation</h2><div class=f>" \
     "<label for=rmac>MAC address</label>" \
     "<input id=rmac type=text name=dhcp_mac placeholder='AA:BB:CC:DD:EE:FF'>" \
@@ -79,7 +79,7 @@
 #define PORTMAP_IFACE_WAN "STA"
 #endif
 
-#define MAPPINGS_PORTFWD_FORM "<form action=/mappings method=GET>" \
+#define MAPPINGS_PORTFWD_FORM "<form action=/mappings method=POST>" \
     "<div class=c><h2>Add a forward</h2><div class=f>" \
     "<label for=pi>Uplink</label>" \
     "<select id=pi name=iface>" PORTMAP_IFACE_OPTIONS "</select>" \

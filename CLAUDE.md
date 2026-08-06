@@ -70,6 +70,15 @@ without one silently loses its overrides. Ethernet boards additionally take
 - Anything originating outside the firmware — client hostnames, query
   parameters, stored configuration — must be escaped or filtered before it
   reaches a page.
+- Anything that changes state is a POST. A page handler calls `take_form()`
+  first: on GET it yields a NULL form and the page just renders; on POST it
+  checks the request's origin, reads the body, and hands back a buffer that
+  `httpd_query_key_value()` parses exactly like a query string. Query
+  parameters are for reads only — an error message to display, an SSID to
+  pre-fill. That includes row actions: a Delete button is a one-button form,
+  not a link.
+- `SEND_RENDERED(req, buf, n)` rather than `SEND_CHUNK(req, buf, n)` after an
+  `snprintf`. snprintf returns the length it wanted, not the length it wrote.
 
 ## Code exploration
 
