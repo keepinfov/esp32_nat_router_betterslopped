@@ -68,8 +68,9 @@ declare -A TARGET_SDKCONFIG_FILE=(
 
 # Fail the build when the app no longer leaves room in its OTA slot.
 # ota_0 is 1536 KiB (partitions_example.csv).
-OTA_SLOT_BYTES=$((1536 * 1024))
 OTA_MAX_PERCENT=95
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -146,27 +147,18 @@ build_target() {
 }
 
 # Refuse to publish a build that has nearly filled its OTA slot. Without this
-# the C3 and C5 images crept to over 99% of ota_0 unnoticed.
+# the C3 and C5 images crept to over 99% of ota_0 unnoticed. Shares the check
+# with CI so the two cannot drift apart.
 check_ota_headroom() {
     local target=$1
     local build_dir="${TARGET_BUILD_DIR[$target]:-build}"
-    local app="$build_dir/esp32_nat_router.bin"
 
-    [ -f "$app" ] || return 0
-
-    local size
-    size=$(stat -c%s "$app" 2>/dev/null || stat -f%z "$app" 2>/dev/null) || return 0
-    local percent=$((size * 100 / OTA_SLOT_BYTES))
-    local free=$((OTA_SLOT_BYTES - size))
-
-    print_status "  ota_0 usage: $size / $OTA_SLOT_BYTES bytes (${percent}%, ${free} free)"
-
-    if [ "$percent" -ge "$OTA_MAX_PERCENT" ]; then
-        print_error "$target fills ${percent}% of ota_0 (limit ${OTA_MAX_PERCENT}%)"
-        print_error "Free flash before publishing — see 'idf.py size-components'."
-        return 1
+    if python3 "$SCRIPT_DIR/tools/check_app_size.py" "$build_dir" \
+            --name "$target" --limit "$OTA_MAX_PERCENT"; then
+        return 0
     fi
-    return 0
+    print_error "Free flash before publishing — see 'idf.py size-components'."
+    return 1
 }
 
 # Function to save binary artifacts to separate directory
@@ -266,8 +258,6 @@ main() {
     # Check if ESP-IDF environment is set up
     check_idf_env
     
-    # Store current directory
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$SCRIPT_DIR"
     
     print_status "Working directory: $(pwd)"

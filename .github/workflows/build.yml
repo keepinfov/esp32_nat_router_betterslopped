@@ -65,17 +65,9 @@ jobs:
       - name: Check ota_0 headroom
         shell: bash
         run: |
-          slot=$((1536 * 1024))
-          limit=95
-          app="build_${{ matrix.name }}/esp32_nat_router.bin"
-          size=$(stat -c%s "$app")
-          percent=$((size * 100 / slot))
-          echo "${{ matrix.name }}: $size / $slot bytes (${percent}%, $((slot - size)) free)"
-          echo "### ${{ matrix.name }}: ${percent}% of ota_0, $((slot - size)) bytes free" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$percent" -ge "$limit" ]; then
-            echo "::error::${{ matrix.name }} fills ${percent}% of ota_0 (limit ${limit}%)"
-            exit 1
-          fi
+          printf '| target | bytes | of slot | free | |\n|---|--:|--:|--:|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/check_app_size.py "build_${{ matrix.name }}" \
+            --name "${{ matrix.name }}" --summary
 
       - name: Component sizes
         if: always()
