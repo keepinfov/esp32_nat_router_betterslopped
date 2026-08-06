@@ -43,6 +43,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The IDF container runs as root while the checkout is owned by another
+      # uid, so git refuses to read the repository and idf.py cannot resolve
+      # the version it stamps into the app descriptor.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Build ${{ matrix.name }}
         shell: bash
         run: |
