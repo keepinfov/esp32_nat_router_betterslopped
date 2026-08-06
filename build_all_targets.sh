@@ -8,9 +8,18 @@
 #   ./build_all_targets.sh --clean esp32c3  full rebuild
 #   ./build_all_targets.sh --save           also refresh firmware_*/
 #
+# Leaving optional subsystems out, when flash is tight:
+#
+#   ./build_all_targets.sh --without mqtt esp32c3
+#   ./build_all_targets.sh --without mqtt,oled,pcap esp32c3
+#   ./build_all_targets.sh --minimal esp32c3          all of them off
+#   ./build_all_targets.sh --features                 what they cost
+#
 # Builds are incremental and leave the repository untouched unless --save is
 # given: checking that something still compiles should not rewrite nine
-# megabytes of tracked binaries.
+# megabytes of tracked binaries. Changing the feature set is the exception —
+# it forces a reconfigure, because ESP-IDF treats an existing sdkconfig as the
+# source of truth and would otherwise ignore the request.
 #
 # Requires a sourced ESP-IDF environment: . $IDF_PATH/export.sh
 
@@ -18,6 +27,29 @@ set -e  # Exit on any error
 
 DO_CLEAN=false
 DO_SAVE=false
+DISABLED_FEATURES=()
+
+# Optional subsystems, by the name you type. Each is a Kconfig option that
+# defaults to y; turning one off compiles its component to nothing. The sizes
+# are measured on the ESP32-C3, each by building with that one option off.
+declare -A FEATURE_OPTION=(
+    ["mqtt"]="CONFIG_MQTT_HOMEASSISTANT"
+    ["oled"]="CONFIG_OLED_DISPLAY"
+    ["console"]="CONFIG_REMOTE_CONSOLE"
+    ["pcap"]="CONFIG_PCAP_CAPTURE"
+    ["syslog"]="CONFIG_SYSLOG_CLIENT"
+)
+
+declare -A FEATURE_DESC=(
+    ["mqtt"]="MQTT / Home Assistant telemetry     57.3 KB"
+    ["oled"]="SSD1306 status display (C3/S3)      18.8 KB"
+    ["console"]="Remote console over TCP              5.5 KB"
+    ["pcap"]="Packet capture to Wireshark          4.7 KB"
+    ["syslog"]="Remote syslog over UDP               3.1 KB"
+)
+
+# The order they are listed in, largest first.
+FEATURE_ORDER=("mqtt" "oled" "console" "pcap" "syslog")
 
 # Build targets in order
 BUILD_ORDER=("esp32" "wt32_eth01" "esp32_poe_iso" "esp32s3" "esp32c5" "esp32c6" "esp32c3")
@@ -132,6 +164,13 @@ build_target() {
         build_args+=("-D" "SDKCONFIG=$sdkconfig_file")
     fi
 
+    # Anything named on --without goes on the end of the defaults chain, where
+    # it wins over the shared and per-target files.
+    features_fragment "$target"
+    if [ -n "$FEATURES_FILE" ]; then
+        sdkconfig="$sdkconfig;$FEATURES_FILE"
+    fi
+
     # Use custom sdkconfig defaults if specified
     if [ -n "$sdkconfig" ]; then
         build_args+=("-D" "SDKCONFIG_DEFAULTS=$sdkconfig")
@@ -147,7 +186,14 @@ build_target() {
         configured=$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"$/\1/p' "$sdkconfig_file")
     fi
 
-    if [ "$DO_CLEAN" = true ] || [ ! -d "$build_dir" ] || [ "$configured" != "$chip" ]; then
+    # A changed feature set is the third reason to reconfigure: set-target
+    # clears sdkconfig, which is the only way a defaults file can change a
+    # value that is already in it.
+    if [ "$DO_CLEAN" = true ] || [ ! -d "$build_dir" ] || \
+       [ "$configured" != "$chip" ] || [ "$FEATURES_CHANGED" = true ]; then
+        if [ "$FEATURES_CHANGED" = true ] && [ -d "$build_dir" ]; then
+            print_status "Feature set changed — reconfiguring from defaults"
+        fi
         # Goes quiet for a while at "Building ESP-IDF components for target ..."
         # while dependencies are resolved; say so rather than leaving a silent
         # terminal that looks hung.
@@ -286,6 +332,54 @@ usage() {
     # that is not a comment, so the two cannot drift apart.
     awk 'NR>2 && /^#/ { sub(/^# ?/, ""); print; next } NR>2 { exit }' "${BASH_SOURCE[0]}"
     echo "Targets: ${BUILD_ORDER[*]}"
+    echo "Features (for --without): ${FEATURE_ORDER[*]}"
+}
+
+list_features() {
+    echo "Optional subsystems — all built in by default, name them to --without:"
+    echo
+    for f in "${FEATURE_ORDER[@]}"; do
+        printf '  %-9s %s\n' "$f" "${FEATURE_DESC[$f]}"
+    done
+    echo
+    echo "  --minimal is all five, which frees 92.5 KB on the C3."
+    echo "  Sizes measured there; each is a build with that one option off."
+}
+
+# Write the sdkconfig fragment that turns the requested features off, and say
+# whether it differs from what this target was last configured with.
+#
+# ESP-IDF treats an existing sdkconfig as authoritative: a defaults file cannot
+# override a value already in it. So a changed feature set has to go through
+# set-target, which clears sdkconfig and regenerates it from the defaults
+# chain. The stamp is what tells us the set changed.
+features_fragment() {
+    local target=$1
+    local fragment="sdkconfig.${target}.features"
+    local wanted=""
+
+    for f in "${DISABLED_FEATURES[@]:-}"; do
+        [ -n "$f" ] || continue
+        wanted+="${FEATURE_OPTION[$f]}=n"$'\n'
+    done
+
+    FEATURES_CHANGED=false
+    if [ -z "$wanted" ]; then
+        # Nothing to disable. Drop a stale fragment so a previous --without
+        # does not quietly persist into a plain run.
+        if [ -f "$fragment" ]; then
+            rm -f "$fragment"
+            FEATURES_CHANGED=true
+        fi
+        FEATURES_FILE=""
+        return
+    fi
+
+    if [ ! -f "$fragment" ] || [ "$(cat "$fragment")" != "$wanted" ]; then
+        printf '%s' "$wanted" > "$fragment"
+        FEATURES_CHANGED=true
+    fi
+    FEATURES_FILE="$fragment"
 }
 
 # Reads flags and target names; leaves SELECTED_TARGETS holding what to build.
@@ -295,6 +389,22 @@ parse_args() {
         case "$1" in
             --clean) DO_CLEAN=true ;;
             --save)  DO_SAVE=true ;;
+            --minimal) DISABLED_FEATURES=("${FEATURE_ORDER[@]}") ;;
+            --without)
+                shift
+                [ $# -gt 0 ] || { print_error "--without needs a feature list"; list_features; exit 1; }
+                # Comma-separated, so --without mqtt,oled reads naturally.
+                IFS=',' read -ra _feats <<< "$1"
+                for f in "${_feats[@]}"; do
+                    if [ -z "${FEATURE_OPTION[$f]:-}" ]; then
+                        print_error "Unknown feature: $f"
+                        list_features
+                        exit 1
+                    fi
+                    DISABLED_FEATURES+=("$f")
+                done
+                ;;
+            --features) list_features; exit 0 ;;
             -h|--help) usage; exit 0 ;;
             -*)
                 print_error "Unknown option: $1"
@@ -343,6 +453,9 @@ main() {
     print_status "Working directory: $(pwd)"
     print_status "Targets: ${SELECTED_TARGETS[*]}"
     [ "$DO_SAVE" = true ] && print_warning "--save: firmware_*/ will be overwritten"
+    if [ ${#DISABLED_FEATURES[@]} -gt 0 ]; then
+        print_status "Leaving out: ${DISABLED_FEATURES[*]}"
+    fi
 
     # Array to store failed targets
     FAILED_TARGETS=()

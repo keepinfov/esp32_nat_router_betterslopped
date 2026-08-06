@@ -63,6 +63,14 @@ compiles its component to nothing; its header supplies do-nothing inlines so no
 caller needs an `#ifdef`. Measured on the C3: MQTT 57.3 KB, OLED 18.8 KB,
 remote console 5.5 KB, packet capture 4.7 KB, syslog 3.1 KB.
 
+`./build_all_targets.sh --without mqtt,oled esp32c3` is the way to build one;
+`--features` lists them. The script writes the requested `CONFIG_..._n` lines
+to `sdkconfig.<target>.features`, puts it last in the defaults chain, and
+forces a reconfigure whenever the set changes — necessary because ESP-IDF
+treats an existing `sdkconfig` as authoritative and a defaults file cannot
+override a value already in it. A run without `--without` deletes the fragment
+again, so a previous choice cannot persist unnoticed.
+
 Two traps when adding another one. `REQUIRES` must stay unconditional —
 ESP-IDF collects component requirements before it reads sdkconfig, so a
 `CONFIG_`-dependent list comes out empty and the include paths vanish even in

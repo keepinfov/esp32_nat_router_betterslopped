@@ -165,6 +165,41 @@ touched, so it is safe to run just to check that a change still compiles:
 ./build_all_targets.sh --help
 ```
 
+### Leaving features out
+
+Five subsystems are optional. They are all built in by default; name the ones
+you do not want and the build leaves them out entirely:
+
+```bash
+./build_all_targets.sh --features                    # what each one costs
+./build_all_targets.sh --without mqtt esp32c3        # one
+./build_all_targets.sh --without mqtt,oled esp32c3   # several
+./build_all_targets.sh --minimal esp32c3             # all five
+./build_all_targets.sh esp32c3                       # and back to the default
+```
+
+| Name | What it is | Frees |
+|---|---|---|
+| `mqtt` | MQTT / Home Assistant telemetry | 57.3 KB |
+| `oled` | SSD1306 status display (C3 and S3 only) | 18.8 KB |
+| `console` | Remote console over TCP | 5.5 KB |
+| `pcap` | Packet capture to Wireshark | 4.7 KB |
+| `syslog` | Remote syslog over UDP | 3.1 KB |
+
+`--minimal` frees 92.5 KB together, taking the C3 image from 86.6% of its OTA
+slot to 80.6%. Every figure is measured, not estimated: each is a build with
+that one option off.
+
+Changing the feature set forces a reconfigure and so a full rebuild. That is
+not laziness — ESP-IDF treats an existing `sdkconfig` as the source of truth,
+and a defaults file cannot override a value already in it, so the config has
+to be regenerated for the request to take effect at all. A run with no
+`--without` clears the setting again, so a previous choice never persists
+silently.
+
+The same switches are in `idf.py menuconfig` under **Optional subsystems** if
+you would rather click.
+
 Each build prints its size against the image published in `firmware_<target>/`:
 
 ```
