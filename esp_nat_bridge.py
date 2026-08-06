@@ -220,6 +220,37 @@ def _require(value: Optional[str], name: str):
         raise ValueError(f"'{name}' is required")
 
 
+def _pcap_filter_args(expr: str) -> list:
+    """Split a pcap filter expression into argv entries, or raise ValueError.
+
+    The result is appended to a tcpdump command line, so a token beginning with
+    a dash is not a filter — it is an option. tcpdump has options that write
+    files (-w) and one that runs a command (-z), which would turn this filter
+    string into arbitrary execution. Nothing in a legitimate BPF expression
+    starts with a dash, so rejecting those tokens costs nothing.
+
+    The character check is a second fence: a pcap expression is host names,
+    numbers, addresses, ports, and the operators between them.
+    """
+    allowed = set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        " .:/[]()<>=!&|+-*%,'\""
+    )
+    rejected = set(expr) - allowed
+    if rejected:
+        raise ValueError(
+            "filter contains characters that are not part of a pcap "
+            "expression: " + "".join(sorted(rejected))
+        )
+    args = expr.split()
+    for arg in args:
+        if arg.startswith("-"):
+            raise ValueError(
+                f"filter token {arg!r} looks like a tcpdump option, not a filter"
+            )
+    return args
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # STATUS & INFORMATION
 # ═══════════════════════════════════════════════════════════════════════════
@@ -932,7 +963,7 @@ async def network_trace(
         if max_packets > 0:
             cmd_parts.extend(["-c", str(max_packets)])
         if tcpdump_filter:
-            cmd_parts.extend(tcpdump_filter.split())
+            cmd_parts.extend(_pcap_filter_args(tcpdump_filter))
 
         proc = await asyncio.create_subprocess_exec(
             *cmd_parts,
@@ -1099,7 +1130,7 @@ async def pcap_save(
             if max_packets > 0:
                 cmd_parts.extend(["-c", str(max_packets)])
             if tcpdump_filter:
-                cmd_parts.extend(tcpdump_filter.split())
+                cmd_parts.extend(_pcap_filter_args(tcpdump_filter))
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd_parts,
