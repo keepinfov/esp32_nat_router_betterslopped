@@ -15,6 +15,12 @@
 #   ./build_all_targets.sh --minimal esp32c3          all of them off
 #   ./build_all_targets.sh --features                 what they cost
 #
+# Flashing what was just built:
+#
+#   ./build_all_targets.sh --flash esp32c3
+#   ./build_all_targets.sh --flash --port /dev/ttyUSB0 esp32c3
+#   ./build_all_targets.sh --flash --monitor esp32c3
+#
 # Builds are incremental and leave the repository untouched unless --save is
 # given: checking that something still compiles should not rewrite nine
 # megabytes of tracked binaries. Changing the feature set is the exception —
@@ -27,6 +33,9 @@ set -e  # Exit on any error
 
 DO_CLEAN=false
 DO_SAVE=false
+DO_FLASH=false
+DO_MONITOR=false
+SERIAL_PORT=""
 DISABLED_FEATURES=()
 
 # Optional subsystems, by the name you type. Each is a Kconfig option that
@@ -215,11 +224,47 @@ build_target() {
             save_binary_artifacts "$target" "$description"
         fi
         print_success "Build completed successfully for $target"
+        # After the size check, never before it: an image that has outgrown its
+        # OTA slot is one you cannot then update over the air.
+        if [ "$DO_FLASH" = true ]; then
+            flash_target "$target" "${build_args[@]}" || return 1
+        fi
         return 0
     else
         print_error "Build failed for $target"
         return 1
     fi
+}
+
+# Flash the image just built, with the same -B and -D SDKCONFIG the build used.
+# Getting those wrong is how you flash a stale image from another target's build
+# tree and spend an afternoon wondering why the fix did not take.
+flash_target() {
+    local target=$1
+    shift
+    local build_args=("$@")
+    local port_args=()
+
+    if [ -n "$SERIAL_PORT" ]; then
+        port_args+=("-p" "$SERIAL_PORT")
+    else
+        print_status "No --port given; letting esptool find the board"
+    fi
+
+    print_status "Flashing $target..."
+    if ! idf.py "${build_args[@]}" "${port_args[@]}" flash; then
+        print_error "Flash failed for $target"
+        print_error "Check the cable, the port, and that nothing else has it open."
+        print_error "Boards without auto-reset need BOOT held while you tap EN."
+        return 1
+    fi
+    print_success "Flashed $target"
+
+    if [ "$DO_MONITOR" = true ]; then
+        print_status "Opening monitor — Ctrl-] to quit"
+        idf.py "${build_args[@]}" "${port_args[@]}" monitor
+    fi
+    return 0
 }
 
 # Refuse to publish a build that has nearly filled its OTA slot. Without this
@@ -390,6 +435,13 @@ parse_args() {
             --clean) DO_CLEAN=true ;;
             --save)  DO_SAVE=true ;;
             --minimal) DISABLED_FEATURES=("${FEATURE_ORDER[@]}") ;;
+            --flash)   DO_FLASH=true ;;
+            --monitor) DO_MONITOR=true; DO_FLASH=true ;;
+            --port)
+                shift
+                [ $# -gt 0 ] || { print_error "--port needs a device"; exit 1; }
+                SERIAL_PORT="$1"
+                ;;
             --without)
                 shift
                 [ $# -gt 0 ] || { print_error "--without needs a feature list"; list_features; exit 1; }
@@ -426,6 +478,13 @@ parse_args() {
     if [ ${#SELECTED_TARGETS[@]} -eq 0 ]; then
         SELECTED_TARGETS=("${BUILD_ORDER[@]}")
     fi
+
+    # One board, one image. Without this, "--flash" with no target would build
+    # all seven and flash each over the last.
+    if [ "$DO_FLASH" = true ] && [ ${#SELECTED_TARGETS[@]} -ne 1 ]; then
+        print_error "--flash takes exactly one target, got: ${SELECTED_TARGETS[*]}"
+        exit 1
+    fi
 }
 
 # Main script execution
@@ -455,6 +514,9 @@ main() {
     [ "$DO_SAVE" = true ] && print_warning "--save: firmware_*/ will be overwritten"
     if [ ${#DISABLED_FEATURES[@]} -gt 0 ]; then
         print_status "Leaving out: ${DISABLED_FEATURES[*]}"
+    fi
+    if [ "$DO_FLASH" = true ]; then
+        print_status "Will flash after building${SERIAL_PORT:+ via $SERIAL_PORT}"
     fi
 
     # Array to store failed targets
@@ -499,7 +561,9 @@ main() {
             print_status "Repository untouched. Pass --save to refresh firmware_*/."
         fi
     else
-        print_error "Build failed for ${#FAILED_TARGETS[@]} target(s):"
+        # Not "build failed": with --flash the build may have succeeded and
+        # only the flash gone wrong, and the two need different fixes.
+        print_error "Failed for ${#FAILED_TARGETS[@]} target(s):"
         for failed_target in "${FAILED_TARGETS[@]}"; do
             print_error "  - $failed_target (${TARGET_DESC[$failed_target]})"
         done

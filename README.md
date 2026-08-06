@@ -200,6 +200,67 @@ silently.
 The same switches are in `idf.py menuconfig` under **Optional subsystems** if
 you would rather click.
 
+### Flashing what you built
+
+```bash
+./build_all_targets.sh --flash esp32c3                      # build, then flash
+./build_all_targets.sh --flash --port /dev/ttyUSB0 esp32c3  # name the port
+./build_all_targets.sh --flash --monitor esp32c3            # and watch it boot
+```
+
+Without `--port` esptool looks for the board itself, which is usually right
+with one board plugged in. On Linux the port is normally `/dev/ttyUSB0` or
+`/dev/ttyACM0`; on macOS `/dev/cu.usbserial-*`; on Windows `COM3` or similar.
+`--monitor` leaves you in the serial console — `Ctrl-]` quits.
+
+Flashing takes exactly one target: one board, one image. It happens only after
+the size check passes, because an image that has outgrown its OTA slot is one
+you could not then update over the air.
+
+If it fails to connect: check the cable is a data cable and not charge-only,
+check nothing else has the port open (a monitor from earlier, Arduino IDE),
+and on Linux check you are in the `dialout` group. Boards without auto-reset
+need BOOT held down while you tap EN, released once flashing starts.
+
+Settings survive reflashing — they live in the NVS partition, which the app
+image does not overlap. To start clean:
+
+```bash
+idf.py -B build_esp32c3 -D SDKCONFIG=sdkconfig.esp32c3 erase-flash
+```
+
+That erases everything, credentials included, and the router comes back up on
+its default AP.
+
+Without the script — note the bootloader offset differs by chip, which is the
+usual reason a hand-copied command produces a board that will not boot:
+
+```bash
+# ESP32-C3, C5, C6, S3: bootloader at 0x0
+idf.py -B build_esp32c3 -D SDKCONFIG=sdkconfig.esp32c3 -p /dev/ttyUSB0 flash
+
+# or with esptool directly
+esptool.py --chip esp32c3 -p /dev/ttyUSB0 write_flash \
+    0x0     build_esp32c3/bootloader/bootloader.bin \
+    0x8000  build_esp32c3/partition_table/partition-table.bin \
+    0xf000  build_esp32c3/ota_data_initial.bin \
+    0x20000 build_esp32c3/esp32_nat_router.bin
+
+# ESP32 and the Ethernet boards: bootloader at 0x1000
+esptool.py --chip esp32 -p /dev/ttyUSB0 write_flash \
+    0x1000  build_eth/bootloader/bootloader.bin \
+    0x8000  build_eth/partition_table/partition-table.bin \
+    0xf000  build_eth/ota_data_initial.bin \
+    0x20000 build_eth/esp32_nat_router.bin
+```
+
+Each build directory holds a `flash_args` file with the exact offsets and flash
+settings for that target, so there is no need to trust the numbers above.
+
+Once a router is running, the quickest route for later builds is the web UI:
+**Config → Firmware → New image**, which takes `esp32_nat_router.bin` on its
+own and needs no cable.
+
 Each build prints its size against the image published in `firmware_<target>/`:
 
 ```
