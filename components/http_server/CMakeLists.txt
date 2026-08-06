@@ -22,6 +22,7 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-function -Os)
 # inputs are generated at build time and so do not exist when CMake configures.
 set(WWW_ASSETS app.css app.js favicon.svg)
 set(PACK_ASSET "${COMPONENT_DIR}/pack_asset.py")
+idf_build_get_property(python PYTHON)
 
 foreach(asset ${WWW_ASSETS})
     set(gz "${CMAKE_CURRENT_BINARY_DIR}/${asset}.gz")

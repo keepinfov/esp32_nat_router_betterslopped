@@ -1,0 +1,89 @@
+name: Build
+
+# The point of this workflow is not just "does it compile": it also guards the
+# flash budget. ota_0 is 1536 KiB and the C3/C5 images had quietly crept past
+# 99% of it, which is only visible if something checks every build.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:release-v5.5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: esp32
+            chip: esp32
+            defaults: sdkconfig.defaults
+          - name: esp32c3
+            chip: esp32c3
+            defaults: sdkconfig.defaults;sdkconfig.defaults.esp32c3
+          - name: esp32c5
+            chip: esp32c5
+            defaults: sdkconfig.defaults;sdkconfig.defaults.esp32c5
+          - name: esp32c6
+            chip: esp32c6
+            defaults: sdkconfig.defaults;sdkconfig.defaults.esp32c6
+          - name: esp32s3
+            chip: esp32s3
+            defaults: sdkconfig.defaults;sdkconfig.defaults.esp32s3
+          - name: wt32_eth01
+            chip: esp32
+            defaults: sdkconfig.defaults;sdkconfig.defaults.eth_common;sdkconfig.defaults.wt32_eth01
+          - name: esp32_poe_iso
+            chip: esp32
+            defaults: sdkconfig.defaults;sdkconfig.defaults.eth_common;sdkconfig.defaults.esp32_poe_iso
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.name }}
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py -B "build_${{ matrix.name }}" \
+                 -D SDKCONFIG="sdkconfig.${{ matrix.name }}" \
+                 -D SDKCONFIG_DEFAULTS="${{ matrix.defaults }}" \
+                 set-target ${{ matrix.chip }}
+          idf.py -B "build_${{ matrix.name }}" \
+                 -D SDKCONFIG="sdkconfig.${{ matrix.name }}" \
+                 -D SDKCONFIG_DEFAULTS="${{ matrix.defaults }}" \
+                 build
+
+      - name: Check ota_0 headroom
+        shell: bash
+        run: |
+          slot=$((1536 * 1024))
+          limit=95
+          app="build_${{ matrix.name }}/esp32_nat_router.bin"
+          size=$(stat -c%s "$app")
+          percent=$((size * 100 / slot))
+          echo "${{ matrix.name }}: $size / $slot bytes (${percent}%, $((slot - size)) free)"
+          echo "### ${{ matrix.name }}: ${percent}% of ota_0, $((slot - size)) bytes free" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$percent" -ge "$limit" ]; then
+            echo "::error::${{ matrix.name }} fills ${percent}% of ota_0 (limit ${limit}%)"
+            exit 1
+          fi
+
+      - name: Component sizes
+        if: always()
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py -B "build_${{ matrix.name }}" size-components || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.name }}
+          path: |
+            build_${{ matrix.name }}/esp32_nat_router.bin
+            build_${{ matrix.name }}/bootloader/bootloader.bin
+            build_${{ matrix.name }}/partition_table/partition-table.bin
+            build_${{ matrix.name }}/ota_data_initial.bin
+          if-no-files-found: warn
